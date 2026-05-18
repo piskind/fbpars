@@ -1,0 +1,24 @@
+# Core
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# Playwright
+playwright==1.49.1
+
+# HTTP
+httpx==0.28.1
+
+# Image dedup
+Pillow==11.0.0
+imagehash==4.3.1
+
+# S3
+aioboto3==13.3.0
+
+# Misc
+python-dotenv==1.0.1
+loguru==0.7.3
+tenacity==9.0.0

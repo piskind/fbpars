@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: spy_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  gost:
+    image: ginuerzh/gost:latest
+    container_name: spy_gost
+    restart: unless-stopped
+    command: >
+      -L=http://:8888
+      -F=socks5://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}
+    ports:
+      - "8888:8888"
+
+  parser:
+    build:
+      context: ./parser
+      dockerfile: Dockerfile
+    container_name: spy_parser
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PROXY_HTTP_GATEWAY: http://gost:8888
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gost:
+        condition: service_started
+    volumes:
+      - ./parser:/app
+    command: ["python", "-m", "app.main"]
+
+volumes:
+  postgres_data:
