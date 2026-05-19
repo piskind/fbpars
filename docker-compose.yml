@@ -46,5 +46,21 @@ services:
       - ./parser:/app
     command: ["python", "-m", "app.main"]
 
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: spy_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./api:/app
+
 volumes:
   postgres_data:
