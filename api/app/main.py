@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
-from app.routers import auth, configs, moderation, users
+from app.routers import auth, configs, moderation, users, media
 
 
 app = FastAPI(title="FB Spy API", version="0.1.0")
@@ -19,6 +19,7 @@ app.include_router(auth.router)
 app.include_router(configs.router)
 app.include_router(moderation.router)
 app.include_router(users.router)
+app.include_router(media.router)
 
 
 @app.get("/health")

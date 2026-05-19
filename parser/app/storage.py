@@ -17,6 +17,11 @@ def _ext_from_url(url: str, fallback: str) -> str:
         return ext
     return fallback
 
+def _build_vhosted_url(endpoint_url: str, bucket: str, key: str) -> str:
+    from urllib.parse import urlparse
+    parsed = urlparse(endpoint_url)
+    return f"{parsed.scheme}://{bucket}.{parsed.netloc}/{key}"
+
 
 def _s3_key(library_id: str, ext: str, idx: int, kind: str) -> str:
     return f"ads/{library_id[-2:]}/{library_id}/{kind}_{idx}.{ext}"
@@ -76,12 +81,13 @@ class MediaUploader:
                 Key=key,
                 Body=data,
                 ContentType=f"image/{ext if ext != 'jpg' else 'jpeg'}",
+                ACL="public-read",
             )
 
         return {
             "original_url": url,
             "s3_key": key,
-            "s3_url": f"{settings.s3_endpoint_url}/{settings.s3_bucket}/{key}",
+            "s3_url": _build_vhosted_url(settings.s3_endpoint_url, settings.s3_bucket, key),
             "md5": md5,
             "phash": phash,
             "width": width,
@@ -110,12 +116,13 @@ class MediaUploader:
                 Key=key,
                 Body=data,
                 ContentType=f"video/{ext}",
+                ACL="public-read",
             )
 
         return {
             "original_url": url,
             "s3_key": key,
-            "s3_url": f"{settings.s3_endpoint_url}/{settings.s3_bucket}/{key}",
+            "s3_url": _build_vhosted_url(settings.s3_endpoint_url, settings.s3_bucket, key),
             "md5": md5,
             "phash": None,
             "width": None,
