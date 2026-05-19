@@ -7,6 +7,7 @@ from app.deps import get_current_admin
 from app.schemas import ModerationItemOut, ModerationActionIn
 from app.models_proxy import ModerationEntry, Ad, ModerationStatus
 from datetime import datetime, timezone
+from app.models_proxy import ModerationEntry, Ad, ModerationStatus
 
 
 router = APIRouter(prefix="/api/moderation", tags=["moderation"])
@@ -15,6 +16,11 @@ router = APIRouter(prefix="/api/moderation", tags=["moderation"])
 @router.get("", response_model=list[ModerationItemOut])
 async def list_moderation(
     status: str = Query("pending"),
+    country: str | None = Query(None),
+    keyword: str | None = Query(None),
+    is_active: bool | None = Query(None),
+    has_media: bool | None = Query(None),
+    search: str | None = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
@@ -22,13 +28,49 @@ async def list_moderation(
 ):
     stmt = (
         select(ModerationEntry)
+        .join(Ad, ModerationEntry.ad_id == Ad.id)
         .options(selectinload(ModerationEntry.ad).selectinload(Ad.creatives))
         .where(ModerationEntry.status == status)
-        .order_by(ModerationEntry.created_at.desc())
-        .limit(limit)
-        .offset(offset)
     )
-    return list((await session.execute(stmt)).scalars().all())
+
+    if country:
+        stmt = stmt.where(Ad.country == country)
+    if keyword:
+        stmt = stmt.where(Ad.keyword == keyword)
+    if is_active is not None:
+        stmt = stmt.where(Ad.is_active.is_(is_active))
+    if search:
+        like = f"%{search}%"
+        stmt = stmt.where(
+            (Ad.body.ilike(like))
+            | (Ad.page_name.ilike(like))
+            | (Ad.library_id.ilike(like))
+            | (Ad.display_url.ilike(like))
+        )
+
+    stmt = stmt.order_by(ModerationEntry.created_at.desc()).limit(limit).offset(offset)
+    items = list((await session.execute(stmt)).scalars().all())
+
+    if has_media is not None:
+        if has_media:
+            items = [i for i in items if i.ad.creatives]
+        else:
+            items = [i for i in items if not i.ad.creatives]
+
+    return items
+
+@router.get("/facets")
+async def facets(
+    session: AsyncSession = Depends(get_session),
+    _=Depends(get_current_admin),
+):
+    countries = (await session.execute(
+        select(Ad.country).distinct().order_by(Ad.country)
+    )).scalars().all()
+    keywords = (await session.execute(
+        select(Ad.keyword).distinct().where(Ad.keyword.is_not(None)).order_by(Ad.keyword)
+    )).scalars().all()
+    return {"countries": list(countries), "keywords": list(keywords)}
 
 
 @router.get("/stats")
