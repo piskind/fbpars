@@ -13,22 +13,18 @@ CTA_KEYWORDS = {
     "Apply Now", "Get Offer", "Download", "Book Now", "Contact Us",
     "Get Quote", "Order Now", "Donate Now", "Watch More", "Get Showtimes",
     "See ad details", "Send messa...",
-    # ES
     "Más información", "Comprar ahora", "Suscribirse", "Enviar mensaje",
     "Solicitar ahora", "Reservar ahora", "Pedir ahora", "Descargar",
     "Obtener oferta", "Contáctenos", "Obtener cotización", "Donar ahora",
     "Ver más", "Ver horarios", "Registrarse",
-    # PT
     "Saiba mais", "Comprar agora", "Inscrever-se", "Enviar mensagem",
     "Candidatar-se", "Reservar agora", "Pedir agora", "Baixar",
     "Obter oferta", "Fale conosco", "Obter cotação", "Assinar",
     "Ver mais", "Doar agora",
-    # FR
     "En savoir plus", "Acheter", "Acheter maintenant", "S'inscrire", "S'abonner",
     "Envoyer un message", "Postuler maintenant", "Réserver maintenant",
     "Commander maintenant", "Télécharger", "Obtenir l'offre",
     "Nous contacter", "Demander un devis", "Faire un don", "Voir plus",
-    # DE
     "Mehr dazu", "Jetzt kaufen", "Registrieren",
 }
 

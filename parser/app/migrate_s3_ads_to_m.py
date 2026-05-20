@@ -1,14 +1,7 @@
-"""
-Скрипт миграции S3: переименовывает ads/ → m/ для всех объектов,
-обновляет s3_key и s3_url в таблице creatives.
-
-Запуск: python -m app.migrate_s3_ads_to_m
-"""
 import asyncio
-import re
-from loguru import logger
 import aioboto3
-from sqlalchemy import select, update
+from loguru import logger
+from sqlalchemy import update
 
 from app.config import settings
 from app.db import AsyncSessionLocal
@@ -61,6 +54,8 @@ async def migrate():
         region_name=settings.s3_region,
     ) as s3:
         keys = await list_old_objects(s3)
+        # keys = keys[:1]
+        # logger.info(f"DRY MODE: processing only first key for test")
         logger.info(f"Found {len(keys)} objects under '{OLD_PREFIX}'")
 
         for old_key in keys:

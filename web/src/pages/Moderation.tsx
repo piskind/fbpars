@@ -13,7 +13,7 @@ export function TrashPage() {
 
 function mediaUrl(s3Url: string | null): string | null {
   if (!s3Url) return null
-  const m = s3Url.match(/\/(ads\/.+)$/)
+  const m = s3Url.match(/\/((?:m|ads)\/.+)$/)
   if (!m) return null
   return `/api/media/${m[1]}`
 }

@@ -1,13 +1,8 @@
-"""
-Refresh worker: обходит активные объявления из БД, проверяет их статус на FB,
-обновляет is_active, last_seen_at, days_active.
-"""
 import asyncio
 from datetime import datetime, timezone
 from sqlalchemy import select, update
 from loguru import logger
 
-from app.config import settings
 from app.db import AsyncSessionLocal
 from app.models import Ad
 from app.browser import browser_context
@@ -16,7 +11,7 @@ from app.proxy import rotate_ip
 
 
 REFRESH_INTERVAL_HOURS = 6
-BATCH_SIZE = 50  # объявлений за один проход воркера
+BATCH_SIZE = 50
 
 
 def _build_ad_url(library_id: str) -> str:
@@ -24,10 +19,6 @@ def _build_ad_url(library_id: str) -> str:
 
 
 async def _check_ad_on_fb(library_id: str) -> bool | None:
-    """
-    Возвращает True если объявление активно, False если неактивно,
-    None если страница не загрузилась или объявление не найдено.
-    """
     url = _build_ad_url(library_id)
     try:
         async with browser_context() as context:
@@ -77,6 +68,14 @@ async def _get_active_ads(session, limit: int) -> list[Ad]:
     return list((await session.execute(stmt)).scalars().all())
 
 
+def _compute_days_active(ad: Ad, now: datetime) -> int:
+    ref = ad.started_at or ad.first_seen_at
+    if ref:
+        ref = ref.replace(tzinfo=timezone.utc) if ref.tzinfo is None else ref
+        return max(0, (now - ref).days)
+    return ad.days_active
+
+
 async def refresh_batch(limit: int = BATCH_SIZE) -> dict:
     now = datetime.now(timezone.utc)
     stats = {"checked": 0, "deactivated": 0, "still_active": 0, "unknown": 0, "errors": 0}
@@ -120,14 +119,6 @@ async def refresh_batch(limit: int = BATCH_SIZE) -> dict:
 
     logger.info(f"[refresh] Batch done: {stats}")
     return stats
-
-
-def _compute_days_active(ad: Ad, now: datetime) -> int:
-    ref = ad.started_at or ad.first_seen_at
-    if ref:
-        ref = ref.replace(tzinfo=timezone.utc) if ref.tzinfo is None else ref
-        return max(0, (now - ref).days)
-    return ad.days_active
 
 
 async def run_refresh_loop():
