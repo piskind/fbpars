@@ -35,10 +35,10 @@ async def _check_ad_on_fb(library_id: str) -> bool | None:
                 logger.error(f"[refresh] {library_id}: network error {e}")
                 return None  # сеть — не трогаем
 
-            # Даём странице время отрисоваться
+            # даем странице время отрисоваться
             await asyncio.sleep(2)
 
-            # Ищем именно карточку с нужным Library ID
+            # ищем именно карточку с нужным либ айди
             card_text = None
             try:
                 divs = await page.query_selector_all("div")
@@ -49,14 +49,13 @@ async def _check_ad_on_fb(library_id: str) -> bool | None:
                         break
             except Exception as e:
                 logger.warning(f"[refresh] {library_id}: DOM scan error {e}")
-                return None  # не смогли просканировать — не трогаем
+                return None  # не смогли просканировать то не трогаем
 
             if not card_text:
-                # Страница загрузилась, но карточки с нашим ID нет — ad точно умер
+                # страница загрузилась, но карточки с нашим айди нет то мертв
                 logger.info(f"[refresh] {library_id}: card not found → INACTIVE")
                 return False
 
-            # Парсим текст карточки и берём статус из неё
             try:
                 card = parse_card_text(card_text)
                 return bool(card.is_active)
