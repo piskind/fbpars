@@ -19,40 +19,51 @@ def _build_ad_url(library_id: str) -> str:
 
 
 async def _check_ad_on_fb(library_id: str) -> bool | None:
+    """
+    Возвращает:
+      True  — ad активен на FB
+      False — ad точно умер (страница загрузилась но карточки нет, либо парсер видит Inactive в карточке)
+      None  — не смогли проверить (сетевая ошибка, прокси, FB-блок) — статус не трогаем
+    """
     url = _build_ad_url(library_id)
     try:
         async with browser_context() as context:
             page = await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-
             try:
-                await page.wait_for_selector('div:has-text("Library ID:")', timeout=15_000)
-            except Exception:
-                logger.warning(f"[refresh] {library_id}: no card found on page")
+                await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            except Exception as e:
+                logger.error(f"[refresh] {library_id}: network error {e}")
+                return None  # сеть — не трогаем
+
+            # Даём странице время отрисоваться
+            await asyncio.sleep(2)
+
+            # Ищем именно карточку с нужным Library ID
+            card_text = None
+            try:
+                divs = await page.query_selector_all("div")
+                for div in divs:
+                    t = await div.inner_text()
+                    if f"Library ID: {library_id}" in t and 100 < len(t) < 5000:
+                        card_text = t
+                        break
+            except Exception as e:
+                logger.warning(f"[refresh] {library_id}: DOM scan error {e}")
+                return None  # не смогли просканировать — не трогаем
+
+            if not card_text:
+                # Страница загрузилась, но карточки с нашим ID нет — ad точно умер
+                logger.info(f"[refresh] {library_id}: card not found → INACTIVE")
+                return False
+
+            # Парсим текст карточки и берём статус из неё
+            try:
+                card = parse_card_text(card_text)
+                return bool(card.is_active)
+            except Exception as e:
+                logger.warning(f"[refresh] {library_id}: parse error {e}")
                 return None
 
-            await asyncio.sleep(2)
-            text = await page.inner_text("body")
-
-            head = text[:500]
-            if "Inactive" in head:
-                return False
-            if "Active" in head:
-                return True
-
-            card_text = ""
-            divs = await page.query_selector_all("div")
-            for div in divs:
-                t = await div.inner_text()
-                if f"Library ID: {library_id}" in t and len(t) < 5000:
-                    card_text = t
-                    break
-
-            if card_text:
-                card = parse_card_text(card_text)
-                return card.is_active
-
-            return None
     except Exception as e:
         logger.error(f"[refresh] {library_id}: error {e}")
         return None
