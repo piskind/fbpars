@@ -25,6 +25,9 @@ export function Layout({ children }: { children: ReactNode }) {
           FB Spy Admin
         </Link>
         <nav className="flex-1 space-y-1">
+          <NavLink to="/" end className={linkClass}>
+            Главная
+          </NavLink>
           <NavLink to="/moderation" className={linkClass}>
             Модерация
           </NavLink>

@@ -14,9 +14,9 @@ async def main():
         resp = await client.get("https://api.ipify.org")
         logger.info(f"Our IP via proxy: {resp.text}")
 
-    logger.info("Parser idle, sleeping")
-    while True:
-        await asyncio.sleep(60)
+    from app.refresh_worker import run_refresh_loop
+    logger.info("Starting refresh loop")
+    await run_refresh_loop()
 
 
 if __name__ == "__main__":

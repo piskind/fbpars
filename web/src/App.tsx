@@ -1,9 +1,10 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { LoginPage } from './pages/Login'
-import { ConfigsPage } from './pages/Configs'
+import ConfigsPage from './pages/Configs'
 import { ModerationPage, TrashPage } from './pages/Moderation'
 import { UsersPage } from './pages/Users'
+import { DashboardPage } from './pages/Dashboard'
 import { PrivateRoute } from './components/PrivateRoute'
 import { Layout } from './components/Layout'
 
@@ -25,7 +26,7 @@ function App() {
               <PrivateRoute>
                 <Layout>
                   <Routes>
-                    <Route path="/" element={<Navigate to="/moderation" />} />
+                    <Route path="/" element={<DashboardPage />} />
                     <Route path="/moderation" element={<ModerationPage />} />
                     <Route path="/trash" element={<TrashPage />} />
                     <Route path="/configs" element={<ConfigsPage />} />

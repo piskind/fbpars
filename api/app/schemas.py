@@ -26,6 +26,16 @@ class ParsingConfigIn(BaseModel):
     notes: str | None = None
 
 
+ParsingConfigCreate = ParsingConfigIn
+
+
+class ParsingConfigUpdate(BaseModel):
+    keyword: str | None = None
+    country: str | None = None
+    is_active: bool | None = None
+    notes: str | None = None
+
+
 class ParsingConfigOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -35,6 +45,8 @@ class ParsingConfigOut(BaseModel):
     notes: str | None
     created_at: datetime
     updated_at: datetime
+    ads_count: int = 0
+    last_parsed_at: datetime | None = None
 
 
 class CreativeOut(BaseModel):

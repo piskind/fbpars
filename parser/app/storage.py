@@ -24,7 +24,7 @@ def _build_vhosted_url(endpoint_url: str, bucket: str, key: str) -> str:
 
 
 def _s3_key(library_id: str, ext: str, idx: int, kind: str) -> str:
-    return f"ads/{library_id[-2:]}/{library_id}/{kind}_{idx}.{ext}"
+    return f"m/{library_id[-2:]}/{library_id}/{kind}_{idx}.{ext}"
 
 
 async def _download(url: str) -> bytes | None:

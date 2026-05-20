@@ -34,6 +34,8 @@ export type Config = {
   notes: string | null
   created_at: string
   updated_at: string
+  ads_count: number
+  last_parsed_at: string | null
 }
 
 export type Creative = {
