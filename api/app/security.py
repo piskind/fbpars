@@ -15,10 +15,11 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_token(sub: str | int) -> str:
+def create_token(sub: str | int, kind: str = "admin") -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(sub),
+        "kind": kind,
         "iat": now,
         "exp": now + timedelta(minutes=settings.jwt_expires_minutes),
     }

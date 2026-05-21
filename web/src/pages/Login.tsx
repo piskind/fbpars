@@ -11,7 +11,7 @@ export function LoginPage() {
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const ok = await signIn(login, password)
-    if (ok) navigate('/moderation')
+    if (ok) navigate('/admin/moderation')
   }
 
   return (

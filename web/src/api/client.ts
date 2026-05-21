@@ -1,30 +1,39 @@
 import axios from 'axios'
 
-export const api = axios.create({
-  baseURL: '/api',
-  headers: { 'Content-Type': 'application/json' },
-})
+function makeApi(tokenKey: string, loginPath: string) {
+  const instance = axios.create({
+    baseURL: '/api',
+    headers: { 'Content-Type': 'application/json' },
+  })
 
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
-})
-
-api.interceptors.response.use(
-  (r) => r,
-  (err) => {
-    if (err.response?.status === 401) {
-      localStorage.removeItem('token')
-      if (location.pathname !== '/login') {
-        location.href = '/login'
-      }
+  instance.interceptors.request.use((config) => {
+    const token = localStorage.getItem(tokenKey)
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
     }
-    return Promise.reject(err)
-  }
-)
+    return config
+  })
+
+  instance.interceptors.response.use(
+    (r) => r,
+    (err) => {
+      if (err.response?.status === 401) {
+        localStorage.removeItem(tokenKey)
+        if (location.pathname !== loginPath && !location.pathname.startsWith('/signup')) {
+          location.href = loginPath
+        }
+      }
+      return Promise.reject(err)
+    }
+  )
+
+  return instance
+}
+
+export const adminApi = makeApi('admin_token', '/admin/login')
+export const clientApi = makeApi('client_token', '/login')
+
+export const api = adminApi
 
 export type Config = {
   id: number
@@ -53,6 +62,7 @@ export type Ad = {
   library_id: string
   country: string
   keyword: string | null
+  vertical: string | null
   page_id: string | null
   page_name: string | null
   page_url: string | null
@@ -67,7 +77,6 @@ export type Ad = {
   first_seen_at: string
   last_seen_at: string
   duplicates_count: number
-  vertical: string | null
   creatives: Creative[]
 }
 

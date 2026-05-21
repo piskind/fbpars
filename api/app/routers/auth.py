@@ -17,7 +17,7 @@ async def login(data: AdminLoginIn, session: AsyncSession = Depends(get_session)
     user = (await session.execute(stmt)).scalar_one_or_none()
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    return TokenOut(access_token=create_token(user.id))
+    return TokenOut(access_token=create_token(user.id, kind="admin"))
 
 
 @router.get("/me", response_model=AdminUserOut)

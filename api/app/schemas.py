@@ -95,7 +95,7 @@ class ModerationItemOut(BaseModel):
     reject_reason: str | None
     ad: AdOut
 
-    
+
 class ClientUserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -108,3 +108,28 @@ class ClientUserOut(BaseModel):
 class ModerationActionIn(BaseModel):
     status: str
     reject_reason: str | None = None
+
+class ClientSignupIn(BaseModel):
+    email: str
+    password: str
+    referral_source: str | None = None
+
+
+class ClientLoginIn(BaseModel):
+    email: str
+    password: str
+
+
+class ClientSignupOut(BaseModel):
+    id: int
+    email: str
+    verification_url: str
+
+
+class ClientUserMe(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    email: str
+    email_verified: bool
+    created_at: datetime
+    last_login_at: datetime | None

@@ -10,6 +10,6 @@ export function PrivateRoute({ children }: { children: ReactNode }) {
     if (token) loadMe()
   }, [token])
 
-  if (!token) return <Navigate to="/login" replace />
+  if (!token) return <Navigate to="/admin/login" replace />
   return <>{children}</>
 }

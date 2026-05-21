@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api } from '../api/client'
+import { adminApi } from '../api/client'
 
 type State = {
   token: string | null
@@ -12,7 +12,7 @@ type State = {
 }
 
 export const useAuth = create<State>((set) => ({
-  token: localStorage.getItem('token'),
+  token: localStorage.getItem('admin_token'),
   login: null,
   loading: false,
   error: null,
@@ -20,8 +20,8 @@ export const useAuth = create<State>((set) => ({
   signIn: async (login, password) => {
     set({ loading: true, error: null })
     try {
-      const { data } = await api.post('/auth/login', { login, password })
-      localStorage.setItem('token', data.access_token)
+      const { data } = await adminApi.post('/auth/login', { login, password })
+      localStorage.setItem('admin_token', data.access_token)
       set({ token: data.access_token, loading: false })
       return true
     } catch (e: any) {
@@ -34,17 +34,17 @@ export const useAuth = create<State>((set) => ({
   },
 
   signOut: () => {
-    localStorage.removeItem('token')
+    localStorage.removeItem('admin_token')
     set({ token: null, login: null })
   },
 
   loadMe: async () => {
     try {
-      const { data } = await api.get('/auth/me')
+      const { data } = await adminApi.get('/auth/me')
       set({ login: data.login })
     } catch {
       set({ token: null, login: null })
-      localStorage.removeItem('token')
+      localStorage.removeItem('admin_token')
     }
   },
 }))
