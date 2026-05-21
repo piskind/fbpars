@@ -1,10 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, ConfigDict
-
-
-class TokenOut(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+from pydantic import BaseModel, ConfigDict
 
 
 class AdminLoginIn(BaseModel):
@@ -12,16 +7,22 @@ class AdminLoginIn(BaseModel):
     password: str
 
 
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
 class AdminUserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     login: str
     is_active: bool
+    created_at: datetime
 
 
 class ParsingConfigIn(BaseModel):
     keyword: str
     country: str
+    vertical: str = "nutra"
     is_active: bool = True
     notes: str | None = None
 
@@ -32,6 +33,7 @@ ParsingConfigCreate = ParsingConfigIn
 class ParsingConfigUpdate(BaseModel):
     keyword: str | None = None
     country: str | None = None
+    vertical: str | None = None
     is_active: bool | None = None
     notes: str | None = None
 
@@ -41,6 +43,7 @@ class ParsingConfigOut(BaseModel):
     id: int
     keyword: str
     country: str
+    vertical: str
     is_active: bool
     notes: str | None
     created_at: datetime
@@ -65,6 +68,7 @@ class AdOut(BaseModel):
     library_id: str
     country: str
     keyword: str | None
+    vertical: str | None = None
     page_id: str | None
     page_name: str | None
     page_url: str | None
@@ -78,6 +82,7 @@ class AdOut(BaseModel):
     days_active: int
     first_seen_at: datetime
     last_seen_at: datetime
+    duplicates_count: int = 0
     creatives: list[CreativeOut] = []
 
 
@@ -90,17 +95,16 @@ class ModerationItemOut(BaseModel):
     reject_reason: str | None
     ad: AdOut
 
+    
+class ClientUserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    email: str
+    email_verified: bool
+    referral_source: str | None = None
+    created_at: datetime
+    last_login_at: datetime | None = None
 
 class ModerationActionIn(BaseModel):
     status: str
     reject_reason: str | None = None
-
-
-class ClientUserOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
-    email: EmailStr
-    email_verified: bool
-    referral_source: str | None
-    created_at: datetime
-    last_login_at: datetime | None

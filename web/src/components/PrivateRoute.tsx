@@ -1,5 +1,6 @@
 import { Navigate } from 'react-router-dom'
-import { ReactNode, useEffect } from 'react'
+import { useEffect } from 'react'
+import type { ReactNode } from 'react'
 import { useAuth } from '../auth/store'
 
 export function PrivateRoute({ children }: { children: ReactNode }) {

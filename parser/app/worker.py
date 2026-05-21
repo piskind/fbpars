@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 from sqlalchemy import select
+from app.models import Ad
 from loguru import logger
 from app.db import AsyncSessionLocal
 from app.models import ParsingConfig, AdMediaType
@@ -48,9 +49,14 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
             card.page_url = raw["page_url"]
             card.link_url = raw["external_url"]
 
+            if not card.image_urls and not card.video_urls:
+                logger.info(f"[#{config.id}] skip {card.library_id}: no media in card")
+                stats["skipped_no_media"] = stats.get("skipped_no_media", 0) + 1
+                continue
+
             async with AsyncSessionLocal() as session:
                 try:
-                    ad, is_new = await upsert_ad(session, card, config.country, config.keyword)
+                    ad, is_new = await upsert_ad(session, card, config.country, config.keyword, config.vertical)
                     await session.commit()
                     if is_new:
                         stats["new"] += 1
@@ -86,6 +92,22 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
                     stats["media_ok"] += 1
                 else:
                     stats["media_fail"] += 1
+
+        async with AsyncSessionLocal() as session:
+                from sqlalchemy import select, func
+                from app.models import Creative
+                cnt = await session.scalar(
+                    select(func.count(Creative.id)).where(
+                        Creative.ad_id == ad_id, Creative.s3_url.is_not(None)
+                    )
+                )
+                if not cnt:
+                    db_ad = await session.get(Ad, ad_id)
+                    if db_ad:
+                        await session.delete(db_ad)
+                        await session.commit()
+                        logger.info(f"[#{config.id}] removed {card.library_id}: no media saved")
+                        stats["removed_no_media"] = stats.get("removed_no_media", 0) + 1
 
     except Exception as e:
         logger.error(f"[#{config.id}] Fatal error: {e}")

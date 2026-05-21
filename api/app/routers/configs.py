@@ -40,6 +40,7 @@ async def list_configs(
                 id=c.id,
                 keyword=c.keyword,
                 country=c.country,
+                vertical=c.vertical,
                 is_active=c.is_active,
                 notes=c.notes,
                 created_at=c.created_at,
@@ -60,6 +61,7 @@ async def create_config(
     cfg = ParsingConfig(
         keyword=body.keyword,
         country=body.country,
+        vertical=body.vertical,
         is_active=body.is_active,
         notes=body.notes,
     )
@@ -70,6 +72,7 @@ async def create_config(
         id=cfg.id,
         keyword=cfg.keyword,
         country=cfg.country,
+        vertical=cfg.vertical,
         is_active=cfg.is_active,
         notes=cfg.notes,
         created_at=cfg.created_at,
@@ -98,6 +101,8 @@ async def update_config(
         cfg.is_active = body.is_active
     if body.notes is not None:
         cfg.notes = body.notes
+    if body.vertical is not None:
+        cfg.vertical = body.vertical
 
     await session.commit()
     await session.refresh(cfg)
@@ -111,6 +116,7 @@ async def update_config(
         id=cfg.id,
         keyword=cfg.keyword,
         country=cfg.country,
+        vertical=cfg.vertical,
         is_active=cfg.is_active,
         notes=cfg.notes,
         created_at=cfg.created_at,

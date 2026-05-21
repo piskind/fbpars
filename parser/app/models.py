@@ -45,6 +45,7 @@ class ParsingConfig(Base):
     country: Mapped[str] = mapped_column(String(8))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vertical: Mapped[str] = mapped_column(String(32), default="nutra", index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -109,6 +110,7 @@ class Ad(Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_refresh_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    vertical: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
 
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 

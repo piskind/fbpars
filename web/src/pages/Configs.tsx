@@ -3,6 +3,20 @@ import { useState } from 'react'
 import { api } from '../api/client'
 import type { Config } from '../api/client'
 
+const VERTICALS = [
+  { value: 'nutra', label: 'Нутра' },
+  { value: 'gambling', label: 'Гембла' },
+  { value: 'dating', label: 'Дейтинг' },
+  { value: 'crypto', label: 'Крипта' },
+  { value: 'finance', label: 'Финансы' },
+  { value: 'adult', label: 'Адалт' },
+  { value: 'other', label: 'Прочее' },
+]
+
+function verticalLabel(v: string): string {
+  return VERTICALS.find((x) => x.value === v)?.label || v
+}
+
 export default function ConfigsPage() {
   const qc = useQueryClient()
   const { data, isLoading } = useQuery({
@@ -12,6 +26,7 @@ export default function ConfigsPage() {
 
   const [keyword, setKeyword] = useState('')
   const [country, setCountry] = useState('')
+  const [vertical, setVertical] = useState('nutra')
   const [notes, setNotes] = useState('')
 
   const create = useMutation({
@@ -19,6 +34,7 @@ export default function ConfigsPage() {
       await api.post('/configs', {
         keyword,
         country,
+        vertical,
         notes: notes || null,
         is_active: true,
       })
@@ -26,6 +42,7 @@ export default function ConfigsPage() {
     onSuccess: () => {
       setKeyword('')
       setCountry('')
+      setVertical('nutra')
       setNotes('')
       qc.invalidateQueries({ queryKey: ['configs'] })
     },
@@ -83,6 +100,18 @@ export default function ConfigsPage() {
             className="px-3 py-2 border rounded-lg text-sm w-24"
           />
         </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Вертикаль</label>
+          <select
+            value={vertical}
+            onChange={(e) => setVertical(e.target.value)}
+            className="px-3 py-2 border rounded-lg text-sm"
+          >
+            {VERTICALS.map((v) => (
+              <option key={v.value} value={v.value}>{v.label}</option>
+            ))}
+          </select>
+        </div>
         <div className="flex-1 min-w-[200px]">
           <label className="block text-xs text-gray-500 mb-1">Заметка</label>
           <input
@@ -110,6 +139,7 @@ export default function ConfigsPage() {
               <th className="text-left px-4 py-3 text-sm">ID</th>
               <th className="text-left px-4 py-3 text-sm">Ключ</th>
               <th className="text-left px-4 py-3 text-sm">Гео</th>
+              <th className="text-left px-4 py-3 text-sm">Вертикаль</th>
               <th className="text-left px-4 py-3 text-sm">Спарсено</th>
               <th className="text-left px-4 py-3 text-sm">Последний парсинг</th>
               <th className="text-left px-4 py-3 text-sm">Активен</th>
@@ -123,6 +153,11 @@ export default function ConfigsPage() {
                 <td className="px-4 py-3 text-sm text-gray-500">{c.id}</td>
                 <td className="px-4 py-3 font-medium">{c.keyword}</td>
                 <td className="px-4 py-3">{c.country}</td>
+                <td className="px-4 py-3 text-sm">
+                  <span className="bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-xs">
+                    {verticalLabel(c.vertical)}
+                  </span>
+                </td>
                 <td className="px-4 py-3 text-sm">
                   {c.ads_count > 0 ? c.ads_count : <span className="text-gray-300">—</span>}
                 </td>

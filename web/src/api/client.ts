@@ -30,6 +30,7 @@ export type Config = {
   id: number
   keyword: string
   country: string
+  vertical: string
   is_active: boolean
   notes: string | null
   created_at: string
@@ -65,6 +66,8 @@ export type Ad = {
   days_active: number
   first_seen_at: string
   last_seen_at: string
+  duplicates_count: number
+  vertical: string | null
   creatives: Creative[]
 }
 

@@ -58,17 +58,36 @@ class MediaUploader:
         data = await _download(url)
         if not data:
             return None
-
         md5, phash = _compute_hashes(data, is_image=True)
         ext = _ext_from_url(url, "jpg")
-        key = _s3_key(library_id, ext, idx, "img")
-
         try:
             img = Image.open(io.BytesIO(data))
             width, height = img.size
         except Exception:
             width, height = None, None
 
+        if phash:
+            from sqlalchemy import select
+            from app.db import AsyncSessionLocal
+            from app.models import Creative
+            async with AsyncSessionLocal() as s:
+                existing = (await s.execute(
+                    select(Creative).where(Creative.phash == phash, Creative.s3_key.is_not(None)).limit(1)
+                )).scalar_one_or_none()
+            if existing:
+                logger.info(f"phash dedupe: reusing {existing.s3_key} for {library_id}/img_{idx}")
+                return {
+                    "original_url": url,
+                    "s3_key": existing.s3_key,
+                    "s3_url": existing.s3_url,
+                    "md5": md5,
+                    "phash": phash,
+                    "width": width,
+                    "height": height,
+                    "file_size": len(data),
+                }
+
+        key = _s3_key(library_id, ext, idx, "img")
         async with self.session.client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
@@ -83,7 +102,6 @@ class MediaUploader:
                 ContentType=f"image/{ext if ext != 'jpg' else 'jpeg'}",
                 ACL="public-read",
             )
-
         return {
             "original_url": url,
             "s3_key": key,

@@ -1,5 +1,5 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom'
-import { ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { useAuth } from '../auth/store'
 
 export function Layout({ children }: { children: ReactNode }) {

@@ -57,6 +57,30 @@ async def list_moderation(
         else:
             items = [i for i in items if not i.ad.creatives]
 
+    phashes = set()
+    for item in items:
+        for c in item.ad.creatives:
+            if c.phash:
+                phashes.add(c.phash)
+
+    dupe_counts: dict[str, int] = {}
+    if phashes:
+        from app.models_proxy import Creative
+        from sqlalchemy import func as sa_func
+        rows = (await session.execute(
+            select(Creative.phash, sa_func.count(Creative.id))
+            .where(Creative.phash.in_(phashes))
+            .group_by(Creative.phash)
+        )).all()
+        dupe_counts = {ph: cnt for ph, cnt in rows}
+
+    for item in items:
+        max_dupes = 0
+        for c in item.ad.creatives:
+            if c.phash and dupe_counts.get(c.phash, 1) - 1 > max_dupes:
+                max_dupes = dupe_counts[c.phash] - 1
+        item.ad.duplicates_count = max_dupes
+
     return items
 
 @router.get("/facets")

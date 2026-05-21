@@ -33,23 +33,25 @@ async def upsert_ad(
     card: ParsedCard,
     country: str,
     keyword: str,
+    vertical: str = "nutra",
 ) -> tuple[Ad, bool]:
     now = datetime.now(timezone.utc)
     existing = await find_ad_by_library_id(session, card.library_id)
-
     if existing:
         existing.is_active = card.is_active
         existing.last_seen_at = now
         existing.last_refresh_at = now
         if card.started_at and not existing.started_at:
             existing.started_at = card.started_at
+        if not existing.vertical:
+            existing.vertical = vertical
         await session.flush()
         return existing, False
-
     ad = Ad(
         library_id=card.library_id,
         country=country,
         keyword=keyword,
+        vertical=vertical,
         page_id=_extract_page_id(card.page_url),
         page_name=card.page_name,
         page_url=card.page_url,
@@ -66,13 +68,10 @@ async def upsert_ad(
     )
     session.add(ad)
     await session.flush()
-
     moderation = ModerationEntry(ad_id=ad.id, status=ModerationStatus.PENDING)
     session.add(moderation)
     await session.flush()
-
     return ad, True
-
 
 async def save_creative(
     session: AsyncSession,

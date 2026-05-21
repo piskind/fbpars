@@ -45,6 +45,7 @@ class ParsingConfig(Base):
     country: Mapped[str] = mapped_column(String(8))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vertical: Mapped[str] = mapped_column(String(32), default="nutra", index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -87,6 +88,7 @@ class Ad(Base):
 
     country: Mapped[str] = mapped_column(String(8), index=True)
     keyword: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    vertical: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
 
     page_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     page_name: Mapped[str | None] = mapped_column(String(512), nullable=True)

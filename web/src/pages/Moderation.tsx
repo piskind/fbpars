@@ -172,8 +172,18 @@ function Card(props: {
       </div>
 
       <div className="p-4 flex-1 flex flex-col">
-        <div className="flex items-center justify-between mb-2 text-sm">
-          <span className="font-medium truncate">{ad.page_name || '—'}</span>
+       <div className="flex items-center justify-between mb-2 text-sm">
+          <span className="font-medium truncate flex items-center gap-2">
+            {ad.page_name || '—'}
+            {ad.duplicates_count > 0 ? (
+              <span
+                title="Это медиа встречается ещё в N объявлениях"
+                className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-normal"
+              >
+                +{ad.duplicates_count}
+              </span>
+            ) : null}
+          </span>
           <span className={ad.is_active ? 'text-green-600 text-xs' : 'text-gray-400 text-xs'}>
             {ad.is_active ? 'Active' : 'Inactive'}
           </span>
