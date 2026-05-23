@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
 from app.models import Ad, Creative, ModerationEntry, AdMediaType, ModerationStatus
 from app.parsers.library_card import ParsedCard
+from app.enrich import enrich_ad_fields
 
 
 async def find_ad_by_library_id(session: AsyncSession, library_id: str) -> Ad | None:
@@ -36,6 +38,10 @@ async def upsert_ad(
     vertical: str = "nutra",
 ) -> tuple[Ad, bool]:
     now = datetime.now(timezone.utc)
+
+    enriched = await enrich_ad_fields(card.link_url, card.body_text)
+    page_id = _extract_page_id(card.page_url)
+
     existing = await find_ad_by_library_id(session, card.library_id)
     if existing:
         existing.is_active = card.is_active
@@ -45,22 +51,63 @@ async def upsert_ad(
             existing.started_at = card.started_at
         if not existing.vertical:
             existing.vertical = vertical
+
+        if card.title and not existing.title:
+            existing.title = card.title
+        if card.body_text and not existing.body:
+            existing.body = card.body_text
+        if card.caption and not existing.caption:
+            existing.caption = card.caption
+        if card.platforms and not existing.platforms:
+            existing.platforms = card.platforms
+        if card.lead_form and not existing.lead_form:
+            existing.lead_form = True
+        if card.page_name and not existing.page_name:
+            existing.page_name = card.page_name
+        if page_id and not existing.page_id:
+            existing.page_id = page_id
+        if card.page_url and not existing.page_url:
+            existing.page_url = card.page_url
+        if card.link_url and not existing.link_url:
+            existing.link_url = card.link_url
+        if card.display_url and not existing.display_url:
+            existing.display_url = card.display_url
+        if card.cta_text and not existing.cta_text:
+            existing.cta_text = card.cta_text
+
+        if enriched["app_store"] and not existing.app_store:
+            existing.app_store = enriched["app_store"]
+        if enriched["ecom_platform"] and not existing.ecom_platform:
+            existing.ecom_platform = enriched["ecom_platform"]
+        if enriched["language"] and not existing.language:
+            existing.language = enriched["language"]
+        if enriched["ip"] and not existing.ip:
+            existing.ip = enriched["ip"]
+
         await session.flush()
         return existing, False
+
     ad = Ad(
         library_id=card.library_id,
         country=country,
         keyword=keyword,
         vertical=vertical,
-        page_id=_extract_page_id(card.page_url),
+        page_id=page_id,
         page_name=card.page_name,
         page_url=card.page_url,
-        title=None,
+        title=card.title,
         body=card.body_text,
+        caption=card.caption,
         cta_text=card.cta_text,
         link_url=card.link_url,
         display_url=card.display_url,
         media_type=_detect_media_type(card),
+        platforms=card.platforms or None,
+        lead_form=card.lead_form,
+        app_store=enriched["app_store"],
+        ecom_platform=enriched["ecom_platform"],
+        language=enriched["language"],
+        ip=enriched["ip"],
         started_at=card.started_at,
         is_active=card.is_active,
         first_seen_at=now,
@@ -72,6 +119,7 @@ async def upsert_ad(
     session.add(moderation)
     await session.flush()
     return ad, True
+
 
 async def save_creative(
     session: AsyncSession,

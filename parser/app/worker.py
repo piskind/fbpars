@@ -129,13 +129,13 @@ async def run_once(limit: int | None = None) -> None:
     logger.info(f"Loaded {len(configs)} active configs")
 
     uploader = MediaUploader()
-    total = {"raw": 0, "new": 0, "updated": 0, "media_ok": 0, "media_fail": 0, "errors": 0}
+    total = {"raw": 0, "new": 0, "updated": 0, "media_ok": 0, "media_fail": 0, "errors": 0, "skipped_no_media": 0}
 
     for i, config in enumerate(configs, 1):
         logger.info(f"--- [{i}/{len(configs)}] config #{config.id} ---")
         stats = await process_config(config, uploader)
         for k, v in stats.items():
-            total[k] += v
+            total[k] = total.get(k, 0) + v
 
         if i < len(configs):
             logger.info("Rotating IP before next config")

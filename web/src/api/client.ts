@@ -64,8 +64,16 @@ export type Ad = {
   keyword: string | null
   vertical: string | null
   page_id: string | null
+  title: string | null
   page_name: string | null
+  caption: string | null
   page_url: string | null
+  platforms: string[] | null
+  lead_form: boolean
+  language: string | null
+  app_store: string | null
+  ecom_platform: string | null
+  ip: string | null
   body: string | null
   cta_text: string | null
   link_url: string | null

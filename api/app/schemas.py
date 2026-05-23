@@ -77,6 +77,12 @@ class AdOut(BaseModel):
     link_url: str | None
     display_url: str | None
     media_type: str
+    platforms: list[str] | None = None
+    lead_form: bool = False
+    language: str | None = None
+    app_store: str | None = None
+    ecom_platform: str | None = None
+    ip: str | None = None
     started_at: datetime | None
     is_active: bool
     days_active: int

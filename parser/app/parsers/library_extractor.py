@@ -30,6 +30,28 @@ EXTRACT_SCRIPT = """
         return null;
     };
 
+    const PLATFORM_KEYWORDS = ['Facebook', 'Instagram', 'Messenger', 'Audience Network', 'Threads'];
+    const extractPlatforms = (el) => {
+        const found = new Set();
+        // 1) текстовая строка "Platforms"
+        const txt = el.innerText || '';
+        const m = txt.match(/Platforms\\s*[:\\n]\\s*([^\\n]+)/i);
+        if (m) {
+            for (const kw of PLATFORM_KEYWORDS) {
+                if (m[1].includes(kw)) found.add(kw);
+            }
+        }
+        // 2) aria-label / alt у иконок
+        const labelled = el.querySelectorAll('[aria-label], img[alt]');
+        for (const node of labelled) {
+            const label = (node.getAttribute('aria-label') || node.getAttribute('alt') || '').trim();
+            for (const kw of PLATFORM_KEYWORDS) {
+                if (label === kw || label.includes(kw)) found.add(kw);
+            }
+        }
+        return Array.from(found);
+    };
+
     for (const el of all) {
         const txt = el.innerText || '';
         if (!txt.includes('Library ID:')) continue;
@@ -95,12 +117,15 @@ EXTRACT_SCRIPT = """
             }
         }
 
+        const platforms = extractPlatforms(el);
+
         results.push({
             text: txt,
             images: imgs,
             videos: vids,
             page_url: pageUrl,
             external_url: externalUrl,
+            platforms: platforms,
         });
     }
     return results;

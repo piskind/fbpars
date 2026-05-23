@@ -1,7 +1,7 @@
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_, and_, distinct
+from sqlalchemy import select, func, or_, and_, distinct, text
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,23 +20,45 @@ from app.schemas import AdOut
 router = APIRouter(prefix="/api/feed", tags=["feed"])
 
 
+def _normalize_domain(d: str | None) -> str | None:
+    if not d:
+        return None
+    d = d.lower().strip()
+    if d.startswith("www."):
+        d = d[4:]
+    if "/" in d:
+        d = d.split("/", 1)[0]
+    return d or None
+
+
 @router.get("", response_model=list[AdOut])
 async def list_feed(
     country: str | None = Query(None),
+    countries: list[str] | None = Query(None),
     keyword: str | None = Query(None),
     vertical: str | None = Query(None),
     media_type: str | None = Query(None),
     cta: str | None = Query(None),
+    platforms: list[str] | None = Query(None),
     domain: str | None = Query(None),
+    page_id: str | None = Query(None),
     page_name: str | None = Query(None),
+    link_contains: str | None = Query(None),
+    language: str | None = Query(None),
+    lead_form: bool | None = Query(None),
+    app_store: str | None = Query(None),
+    ecom_platform: str | None = Query(None),
+    ip: str | None = Query(None),
     search: str | None = Query(None),
     is_active: bool | None = Query(None),
     days_active_min: int | None = Query(None),
     days_active_max: int | None = Query(None),
     started_from: datetime | None = Query(None),
     started_to: datetime | None = Query(None),
+    last_seen_from: datetime | None = Query(None),
+    last_seen_to: datetime | None = Query(None),
     sort: str = Query("newest", regex="^(newest|oldest|days_desc|days_asc)$"),
-    limit: int = Query(40, le=100),
+    limit: int = Query(40, le=1000),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
     _: ClientUser = Depends(get_current_client),
@@ -48,7 +70,9 @@ async def list_feed(
         .options(selectinload(Ad.creatives))
     )
 
-    if country:
+    if countries:
+        stmt = stmt.where(Ad.country.in_(countries))
+    elif country:
         stmt = stmt.where(Ad.country == country)
     if keyword:
         stmt = stmt.where(Ad.keyword == keyword)
@@ -58,10 +82,28 @@ async def list_feed(
         stmt = stmt.where(Ad.media_type == media_type)
     if cta:
         stmt = stmt.where(Ad.cta_text.ilike(f"%{cta}%"))
+    if platforms:
+        stmt = stmt.where(Ad.platforms.op("&&")(platforms))  # array overlap
     if domain:
-        stmt = stmt.where(Ad.display_url.ilike(f"%{domain}%"))
+        nd = _normalize_domain(domain)
+        if nd:
+            stmt = stmt.where(Ad.display_url.ilike(f"%{nd}%"))
+    if page_id:
+        stmt = stmt.where(Ad.page_id == page_id)
     if page_name:
         stmt = stmt.where(Ad.page_name.ilike(f"%{page_name}%"))
+    if link_contains:
+        stmt = stmt.where(Ad.link_url.ilike(f"%{link_contains}%"))
+    if language:
+        stmt = stmt.where(Ad.language == language)
+    if lead_form is not None:
+        stmt = stmt.where(Ad.lead_form.is_(lead_form))
+    if app_store:
+        stmt = stmt.where(Ad.app_store == app_store)
+    if ecom_platform:
+        stmt = stmt.where(Ad.ecom_platform == ecom_platform)
+    if ip:
+        stmt = stmt.where(Ad.ip == ip)
     if is_active is not None:
         stmt = stmt.where(Ad.is_active.is_(is_active))
     if days_active_min is not None:
@@ -72,10 +114,16 @@ async def list_feed(
         stmt = stmt.where(Ad.started_at >= started_from)
     if started_to:
         stmt = stmt.where(Ad.started_at <= started_to)
+    if last_seen_from:
+        stmt = stmt.where(Ad.last_seen_at >= last_seen_from)
+    if last_seen_to:
+        stmt = stmt.where(Ad.last_seen_at <= last_seen_to)
     if search:
         like = f"%{search}%"
         stmt = stmt.where(or_(
             Ad.body.ilike(like),
+            Ad.title.ilike(like),
+            Ad.caption.ilike(like),
             Ad.page_name.ilike(like),
             Ad.library_id.ilike(like),
             Ad.display_url.ilike(like),
@@ -146,12 +194,37 @@ async def facets(
         select(base.c.cta_text).distinct().where(base.c.cta_text.is_not(None)).order_by(base.c.cta_text)
     )).scalars().all()
 
+    languages = (await session.execute(
+        select(base.c.language).distinct().where(base.c.language.is_not(None)).order_by(base.c.language)
+    )).scalars().all()
+    app_stores = (await session.execute(
+        select(base.c.app_store).distinct().where(base.c.app_store.is_not(None)).order_by(base.c.app_store)
+    )).scalars().all()
+    ecom_platforms = (await session.execute(
+        select(base.c.ecom_platform).distinct().where(base.c.ecom_platform.is_not(None)).order_by(base.c.ecom_platform)
+    )).scalars().all()
+
+    # platforms — array column, разворачиваем через unnest
+    platforms_rows = (await session.execute(
+        text(
+            "SELECT DISTINCT unnest(a.platforms) AS p "
+            "FROM ads a "
+            "JOIN moderation_queue m ON m.ad_id = a.id "
+            "WHERE m.status = 'APPROVED' AND a.platforms IS NOT NULL "
+            "ORDER BY p"
+        )
+    )).scalars().all()
+
     return {
         "countries": list(countries),
         "keywords": list(keywords),
         "verticals": list(verticals),
         "media_types": list(media_types),
         "ctas": list(ctas),
+        "languages": list(languages),
+        "app_stores": list(app_stores),
+        "ecom_platforms": list(ecom_platforms),
+        "platforms": list(platforms_rows),
     }
 
 
@@ -190,6 +263,7 @@ async def get_ad(
 @router.get("/{ad_id}/similar", response_model=list[AdOut])
 async def similar_ads(
     ad_id: int,
+    by: str = Query("fp", regex="^(fp|domain)$"),
     limit: int = Query(12, le=50),
     session: AsyncSession = Depends(get_session),
     _: ClientUser = Depends(get_current_client),
@@ -202,17 +276,19 @@ async def similar_ads(
     if not base:
         raise HTTPException(status_code=404, detail="Ad not found")
 
-    phashes = {c.phash for c in base.creatives if c.phash}
-
     conditions = []
-    if base.page_id:
-        conditions.append(Ad.page_id == base.page_id)
-    if phashes:
-        sub = (
-            select(Creative.ad_id)
-            .where(Creative.phash.in_(phashes))
-        )
-        conditions.append(Ad.id.in_(sub))
+
+    if by == "fp":
+        phashes = {c.phash for c in base.creatives if c.phash}
+        if base.page_id:
+            conditions.append(Ad.page_id == base.page_id)
+        if phashes:
+            sub = select(Creative.ad_id).where(Creative.phash.in_(phashes))
+            conditions.append(Ad.id.in_(sub))
+    else:  # by == "domain"
+        nd = _normalize_domain(base.display_url)
+        if nd:
+            conditions.append(Ad.display_url.ilike(f"%{nd}%"))
 
     if not conditions:
         return []

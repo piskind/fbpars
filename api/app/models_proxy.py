@@ -104,6 +104,12 @@ class Ad(Base):
     media_type: Mapped[AdMediaType] = mapped_column(SAEnum(AdMediaType, name="ad_media_type"), default=AdMediaType.UNKNOWN)
     platforms: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
 
+    lead_form: Mapped[bool] = mapped_column(Boolean, default=False)
+    language: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    app_store: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    ecom_platform: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     days_active: Mapped[int] = mapped_column(Integer, default=0)

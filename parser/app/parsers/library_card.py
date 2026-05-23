@@ -5,8 +5,7 @@ from datetime import datetime
 
 LIBRARY_ID_RE = re.compile(r"Library ID:\s*(\d+)")
 STARTED_RE = re.compile(r"Started running on\s+([A-Za-z]+\s+\d{1,2},\s*\d{4})")
-DOMAIN_RE = re.compile(r"^([A-Z0-9][A-Z0-9.\-]+\.(COM|NET|ORG|SITE|SHOP|STORE|ONLINE|XYZ|IO|CO|ME|APP))$")
-
+DOMAIN_RE = re.compile(r"^([A-Z0-9][A-Z0-9.\-]+\.(COM|NET|ORG|SITE|SHOP|STORE|ONLINE|XYZ|IO|CO|ME|APP|TK|ML|GA|CF))$")
 
 CTA_KEYWORDS = {
     "Learn More", "Shop Now", "Sign Up", "Send Message", "Subscribe",
@@ -28,6 +27,20 @@ CTA_KEYWORDS = {
     "Mehr dazu", "Jetzt kaufen", "Registrieren",
 }
 
+CTA_KEYWORDS_LOWER = {kw.lower() for kw in CTA_KEYWORDS}
+
+LEAD_FORM_MARKERS = {
+    "Leave a message", "Submit your information", "Fill out the form",
+    "Get a quote", "Request a quote",
+    "Deja mensaje", "Dejar mensaje", "Solicitar información",
+}
+
+NOISE_LINES = {
+    "Sorry, we're having trouble playing this video.",
+    "Learn more",
+    "Low impression count",
+}
+
 
 @dataclass
 class ParsedCard:
@@ -36,11 +49,15 @@ class ParsedCard:
     started_at: datetime | None = None
     days_active: int = 0
     page_name: str | None = None
+    title: str | None = None
     body_text: str | None = None
+    caption: str | None = None
     cta_text: str | None = None
     link_url: str | None = None
     page_url: str | None = None
     display_url: str | None = None
+    platforms: list[str] = field(default_factory=list)
+    lead_form: bool = False
     image_urls: list[str] = field(default_factory=list)
     video_urls: list[str] = field(default_factory=list)
     poster_urls: list[str] = field(default_factory=list)
@@ -82,6 +99,9 @@ def parse_card_text(text: str) -> ParsedCard:
 
     card.started_at = parse_started_date(text)
 
+    if any(marker in text for marker in LEAD_FORM_MARKERS):
+        card.lead_form = True
+
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     card.display_url = extract_display_url(lines)
 
@@ -95,19 +115,39 @@ def parse_card_text(text: str) -> ParsedCard:
         card.page_name = lines[sponsored_idx - 1]
 
     if sponsored_idx is not None and sponsored_idx + 1 < len(lines):
+        post = lines[sponsored_idx + 1:]
         body_lines = []
-        for line in lines[sponsored_idx + 1:]:
-            if line in CTA_KEYWORDS:
-                card.cta_text = line
-                break
+        post_domain = []
+        domain_seen = False
+        cta_seen = False
+
+        for line in post:
             if line.startswith("Library ID:"):
                 break
+            if line.lower() in CTA_KEYWORDS_LOWER:
+                card.cta_text = line
+                cta_seen = True
+                continue
+            if cta_seen:
+                continue
             if DOMAIN_RE.match(line):
+                domain_seen = True
                 continue
-            if line in {"Sorry, we're having trouble playing this video.", "Learn more"}:
+            if line in NOISE_LINES:
                 continue
-            body_lines.append(line)
+            if re.match(r"^\d+:\d+\s*/\s*\d+:\d+$", line):
+                continue
+            if not domain_seen:
+                body_lines.append(line)
+            else:
+                post_domain.append(line)
+
         if body_lines:
-            card.body_text = "\n".join(body_lines).strip()
+            card.body_text = "\n".join(body_lines).strip() or None
+
+        if post_domain:
+            card.title = post_domain[0]
+            if len(post_domain) > 1:
+                card.caption = post_domain[1]
 
     return card
