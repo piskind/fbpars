@@ -1,7 +1,7 @@
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_, and_, distinct, text
+from sqlalchemy import select, func, or_, and_, distinct, text, String
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -138,30 +138,105 @@ async def list_feed(
     elif sort == "days_asc":
         stmt = stmt.order_by(Ad.days_active.asc())
 
-    stmt = stmt.limit(limit).offset(offset)
-    items = list((await session.execute(stmt)).scalars().all())
+    # Дедупликация по phash на уровне SQL.
+    # 1) Берём список "репрезентативных" ad_id: для каждого phash оставляем
+    #    самую свежую ad, ads без phash — все остаются как есть.
+    from sqlalchemy import literal, case, func as sa_func
 
-    phashes = set()
+    base_subq = stmt.subquery()
+
+    # phash первого creative для каждой ad
+    first_phash_subq = (
+        select(
+            Creative.ad_id,
+            sa_func.min(Creative.phash).label("phash"),
+        )
+        .where(Creative.phash.is_not(None))
+        .group_by(Creative.ad_id)
+        .subquery()
+    )
+
+    ad_with_phash = (
+        select(
+            base_subq.c.id.label("ad_id"),
+            base_subq.c.first_seen_at,
+            base_subq.c.days_active,
+            first_phash_subq.c.phash,
+        )
+        .select_from(
+            base_subq.outerjoin(
+                first_phash_subq, base_subq.c.id == first_phash_subq.c.ad_id
+            )
+        )
+        .subquery()
+    )
+
+    # Для каждого phash оставляем самую свежую ad (DISTINCT ON по phash).
+    # ads без phash — попадают все (NULL уникален в DISTINCT ON).
+    representatives_subq = (
+        select(ad_with_phash.c.ad_id)
+        .distinct(
+            sa_func.coalesce(
+                ad_with_phash.c.phash, sa_func.cast(ad_with_phash.c.ad_id, String)
+            )
+        )
+        .order_by(
+            sa_func.coalesce(
+                ad_with_phash.c.phash, sa_func.cast(ad_with_phash.c.ad_id, String)
+            ),
+            ad_with_phash.c.first_seen_at.desc(),
+        )
+        .subquery()
+    )
+
+    # Считаем дубли для каждого репрезентанта.
+    dupe_count_subq = (
+        select(
+            ad_with_phash.c.phash,
+            (sa_func.count() - 1).label("dupes"),
+        )
+        .where(ad_with_phash.c.phash.is_not(None))
+        .group_by(ad_with_phash.c.phash)
+        .subquery()
+    )
+
+    # Финальная выборка с пагинацией.
+    final_stmt = (
+        select(Ad)
+        .join(representatives_subq, Ad.id == representatives_subq.c.ad_id)
+        .options(selectinload(Ad.creatives))
+    )
+    if sort == "newest":
+        final_stmt = final_stmt.order_by(Ad.first_seen_at.desc())
+    elif sort == "oldest":
+        final_stmt = final_stmt.order_by(Ad.first_seen_at.asc())
+    elif sort == "days_desc":
+        final_stmt = final_stmt.order_by(Ad.days_active.desc())
+    elif sort == "days_asc":
+        final_stmt = final_stmt.order_by(Ad.days_active.asc())
+
+    final_stmt = final_stmt.limit(limit).offset(offset)
+    items = list((await session.execute(final_stmt)).scalars().all())
+
+    # Подтягиваем duplicates_count
+    phashes_in_page = []
     for ad in items:
-        for c in ad.creatives:
-            if c.phash:
-                phashes.add(c.phash)
+        ph = next((c.phash for c in ad.creatives if c.phash), None)
+        if ph:
+            phashes_in_page.append(ph)
 
-    dupe_counts: dict[str, int] = {}
-    if phashes:
+    dupe_map: dict[str, int] = {}
+    if phashes_in_page:
         rows = (await session.execute(
-            select(Creative.phash, func.count(Creative.id))
-            .where(Creative.phash.in_(phashes))
+            select(Creative.phash, sa_func.count(Creative.id))
+            .where(Creative.phash.in_(phashes_in_page))
             .group_by(Creative.phash)
         )).all()
-        dupe_counts = {ph: cnt for ph, cnt in rows}
+        dupe_map = {ph: cnt - 1 for ph, cnt in rows}
 
     for ad in items:
-        max_dupes = 0
-        for c in ad.creatives:
-            if c.phash and dupe_counts.get(c.phash, 1) - 1 > max_dupes:
-                max_dupes = dupe_counts[c.phash] - 1
-        ad.duplicates_count = max_dupes
+        ph = next((c.phash for c in ad.creatives if c.phash), None)
+        ad.duplicates_count = dupe_map.get(ph, 0) if ph else 0
 
     return items
 
