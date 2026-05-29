@@ -6,32 +6,43 @@ export function ClientSignupPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [verifyUrl, setVerifyUrl] = useState<string | null>(null)
+  const [signedUp, setSignedUp] = useState(false)
   const { signUp, loading, error } = useClientAuth()
   const nav = useNavigate()
 
   const onSubmit = async () => {
     const res = await signUp(email, password)
-    if (res.ok && res.verifyUrl) {
-      setVerifyUrl(res.verifyUrl)
+    if (res.ok) {
+      setSignedUp(true)
+      if (res.verifyUrl) setVerifyUrl(res.verifyUrl)
     }
   }
 
-  if (verifyUrl) {
+  if (signedUp) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="bg-white rounded-xl shadow p-6 max-w-md">
           <h1 className="text-xl font-bold mb-3">Подтвердите email</h1>
-          <p className="text-sm text-gray-600 mb-4">
-            Пока сервис в тестовом режиме, ссылка для подтверждения здесь:
-          </p>
-          <a
-            className="block text-blue-600 break-all text-sm hover:underline mb-4"
-            href={verifyUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {verifyUrl}
-          </a>
+          {verifyUrl ? (
+            <>
+              <p className="text-sm text-gray-600 mb-4">
+                Ссылка для подтверждения (режим отладки):
+              </p>
+              <a
+                className="block text-blue-600 break-all text-sm hover:underline mb-4"
+                href={verifyUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {verifyUrl}
+              </a>
+            </>
+          ) : (
+            <p className="text-sm text-gray-600 mb-4">
+              Письмо с ссылкой для подтверждения отправлено на <strong>{email}</strong>.
+              Проверьте входящие (и папку «Спам»).
+            </p>
+          )}
           <button
             onClick={() => nav('/login')}
             className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700"

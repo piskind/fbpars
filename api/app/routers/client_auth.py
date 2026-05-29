@@ -1,9 +1,8 @@
 import secrets
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-import os
 
 from app.db import get_session
 from app.security import hash_password, verify_password, create_token
@@ -16,6 +15,8 @@ from app.schemas import (
 )
 from app.deps import get_current_client
 from app.models_proxy import ClientUser
+from app.config import settings
+from app.email import send_verification_email
 
 
 router = APIRouter(prefix="/api/client", tags=["client_auth"])
@@ -42,11 +43,12 @@ async def signup(data: ClientSignupIn, session: AsyncSession = Depends(get_sessi
     session.add(user)
     await session.commit()
     await session.refresh(user)
-    frontend_base = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
+    await send_verification_email(user.email, token)
+    verify_url = f"{settings.frontend_base_url.rstrip('/')}/verify/{token}"
     return ClientSignupOut(
         id=user.id,
         email=user.email,
-        verification_url=f"{frontend_base}/verify/{token}",
+        verification_url=verify_url if settings.debug else None,
     )
 
 
@@ -61,8 +63,9 @@ async def resend_verification(data: ClientLoginIn, session: AsyncSession = Depen
     new_token = secrets.token_urlsafe(32)
     user.verification_token = new_token
     await session.commit()
-    frontend_base = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
-    return {"ok": True, "verification_url": f"{frontend_base}/verify/{new_token}"}
+    await send_verification_email(user.email, new_token)
+    verify_url = f"{settings.frontend_base_url.rstrip('/')}/verify/{new_token}"
+    return {"ok": True, "verification_url": verify_url if settings.debug else None}
 
 
 @router.get("/verify/{token}")

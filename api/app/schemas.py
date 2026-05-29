@@ -129,7 +129,8 @@ class ClientLoginIn(BaseModel):
 class ClientSignupOut(BaseModel):
     id: int
     email: str
-    verification_url: str
+    message: str = "check your email"
+    verification_url: str | None = None
 
 
 class ClientUserMe(BaseModel):

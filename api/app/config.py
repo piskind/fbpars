@@ -18,5 +18,9 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
+    resend_api_key: str = ""
+    frontend_base_url: str = "http://localhost:5173"
+    debug: bool = False
+
 
 settings = Settings()
