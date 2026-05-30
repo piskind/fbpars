@@ -45,7 +45,7 @@ export function AdDrawer({ adId, onClose }: Props) {
     enabled: !!adId,
   })
 
-  const { data: similar } = useQuery({
+  const { data: similar, isPending: similarPending, isError: similarError } = useQuery({
     queryKey: ['feed-similar', adId, similarBy],
     queryFn: async () => (await clientApi.get<Ad[]>(`/feed/${adId}/similar?by=${similarBy}`)).data,
     enabled: !!adId,
@@ -277,7 +277,11 @@ export function AdDrawer({ adId, onClose }: Props) {
                   </button>
                 </div>
               </div>
-              {similar && similar.length > 0 ? (
+              {similarPending ? (
+                <div className="text-xs text-gray-400">Загрузка...</div>
+              ) : similarError ? (
+                <div className="text-xs text-red-400">Ошибка загрузки</div>
+              ) : similar && similar.length > 0 ? (
                 <div className="grid grid-cols-3 gap-2">
                   {similar.map((s) => {
                     const cre = s.creatives.find((c) => c.s3_url) || s.creatives[0]

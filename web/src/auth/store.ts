@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import axios from 'axios'
 import { adminApi } from '../api/client'
 
 type State = {
@@ -24,11 +25,11 @@ export const useAuth = create<State>((set) => ({
       localStorage.setItem('admin_token', data.access_token)
       set({ token: data.access_token, loading: false })
       return true
-    } catch (e: any) {
-      set({
-        loading: false,
-        error: e?.response?.data?.detail || 'Ошибка авторизации',
-      })
+    } catch (e: unknown) {
+      const msg = axios.isAxiosError(e)
+        ? (e.response?.data?.detail ?? e.message)
+        : 'Ошибка авторизации'
+      set({ loading: false, error: msg })
       return false
     }
   },

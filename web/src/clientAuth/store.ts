@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import axios from 'axios'
 import { clientApi } from '../api/client'
 import type { ClientUser } from '../api/client'
 
@@ -24,11 +25,11 @@ export const useClientAuth = create<State>((set) => ({
       const { data } = await clientApi.post('/client/signup', { email, password })
       set({ loading: false })
       return { ok: true, verifyUrl: data.verification_url }
-    } catch (e: any) {
-      set({
-        loading: false,
-        error: e?.response?.data?.detail || 'Ошибка регистрации',
-      })
+    } catch (e: unknown) {
+      const msg = axios.isAxiosError(e)
+        ? (e.response?.data?.detail ?? e.message)
+        : 'Ошибка регистрации'
+      set({ loading: false, error: msg })
       return { ok: false }
     }
   },
@@ -39,11 +40,11 @@ export const useClientAuth = create<State>((set) => ({
       localStorage.setItem('client_token', data.access_token)
       set({ token: data.access_token, loading: false })
       return true
-    } catch (e: any) {
-      set({
-        loading: false,
-        error: e?.response?.data?.detail || 'Неверный email или пароль',
-      })
+    } catch (e: unknown) {
+      const msg = axios.isAxiosError(e)
+        ? (e.response?.data?.detail ?? e.message)
+        : 'Неверный email или пароль'
+      set({ loading: false, error: msg })
       return false
     }
   },

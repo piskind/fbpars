@@ -8,7 +8,7 @@ export function PrivateRoute({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (token) loadMe()
-  }, [token])
+  }, [token, loadMe])
 
   if (!token) return <Navigate to="/admin/login" replace />
   return <>{children}</>
