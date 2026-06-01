@@ -297,7 +297,7 @@ export function AdDrawer({ adId, onClose }: Props) {
                         }}
                       >
                         {url && isVideo ? (
-                          <video src={url} className="w-full h-full object-cover" muted />
+                          <video src={url} className="w-full h-full object-cover" muted playsInline preload="metadata" />
                         ) : url ? (
                           <img src={url} alt="" className="w-full h-full object-cover" />
                         ) : null}

@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { LoginPage } from './pages/Login'
 import ConfigsPage from './pages/Configs'
+import ParserPage from './pages/Parser'
 import { ModerationPage, TrashPage } from './pages/Moderation'
 import { UsersPage } from './pages/Users'
 import { DashboardPage } from './pages/Dashboard'
@@ -43,6 +44,7 @@ function App() {
                     <Route path="/trash" element={<TrashPage />} />
                     <Route path="/configs" element={<ConfigsPage />} />
                     <Route path="/users" element={<UsersPage />} />
+                    <Route path="/parser" element={<ParserPage />} />
                     <Route path="*" element={<Navigate to="/admin" replace />} />
                   </Routes>
                 </Layout>

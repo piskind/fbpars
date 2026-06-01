@@ -28,6 +28,8 @@ export default function ConfigsPage() {
   const [country, setCountry] = useState('')
   const [vertical, setVertical] = useState('nutra')
   const [notes, setNotes] = useState('')
+  const [partner, setPartner] = useState('')
+  const [category, setCategory] = useState('')
 
   const create = useMutation({
     mutationFn: async () => {
@@ -36,6 +38,8 @@ export default function ConfigsPage() {
         country,
         vertical,
         notes: notes || null,
+        partner: partner || null,
+        category: category || null,
         is_active: true,
       })
     },
@@ -44,6 +48,8 @@ export default function ConfigsPage() {
       setCountry('')
       setVertical('nutra')
       setNotes('')
+      setPartner('')
+      setCategory('')
       qc.invalidateQueries({ queryKey: ['configs'] })
     },
   })
@@ -112,6 +118,24 @@ export default function ConfigsPage() {
             ))}
           </select>
         </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Партнёр</label>
+          <input
+            value={partner}
+            onChange={(e) => setPartner(e.target.value)}
+            placeholder="необязательно"
+            className="px-3 py-2 border rounded-lg text-sm"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Категория</label>
+          <input
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            placeholder="необязательно"
+            className="px-3 py-2 border rounded-lg text-sm"
+          />
+        </div>
         <div className="flex-1 min-w-[200px]">
           <label className="block text-xs text-gray-500 mb-1">Заметка</label>
           <input
@@ -140,6 +164,8 @@ export default function ConfigsPage() {
               <th className="text-left px-4 py-3 text-sm">Ключ</th>
               <th className="text-left px-4 py-3 text-sm">Гео</th>
               <th className="text-left px-4 py-3 text-sm">Вертикаль</th>
+              <th className="text-left px-4 py-3 text-sm">Партнёр</th>
+              <th className="text-left px-4 py-3 text-sm">Категория</th>
               <th className="text-left px-4 py-3 text-sm">Спарсено</th>
               <th className="text-left px-4 py-3 text-sm">Последний парсинг</th>
               <th className="text-left px-4 py-3 text-sm">Активен</th>
@@ -158,6 +184,8 @@ export default function ConfigsPage() {
                     {verticalLabel(c.vertical)}
                   </span>
                 </td>
+                <td className="px-4 py-3 text-sm text-gray-500">{c.partner || '—'}</td>
+                <td className="px-4 py-3 text-sm text-gray-500">{c.category || '—'}</td>
                 <td className="px-4 py-3 text-sm">
                   {c.ads_count > 0 ? c.ads_count : <span className="text-gray-300">—</span>}
                 </td>

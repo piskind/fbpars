@@ -40,6 +40,9 @@ export function Layout({ children }: { children: ReactNode }) {
           <NavLink to="/users" className={linkClass}>
             Пользователи
           </NavLink>
+          <NavLink to="/parser" className={linkClass}>
+            Парсер
+          </NavLink>
         </nav>
         <div className="border-t pt-4 mt-4">
           <div className="text-sm text-gray-500 mb-2 px-2">

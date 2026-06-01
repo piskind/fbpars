@@ -42,6 +42,8 @@ export type Config = {
   vertical: string
   is_active: boolean
   notes: string | null
+  partner: string | null
+  category: string | null
   created_at: string
   updated_at: string
   ads_count: number

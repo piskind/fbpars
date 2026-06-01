@@ -36,7 +36,12 @@ async def upsert_ad(
     country: str,
     keyword: str,
     vertical: str = "nutra",
-) -> tuple[Ad, bool]:
+) -> tuple[Ad, bool, bool]:
+    """Returns (ad, is_new, skipped_moderated).
+
+    skipped_moderated=True means the ad already has REJECTED/APPROVED status —
+    caller should count it separately and skip media upload.
+    """
     now = datetime.now(timezone.utc)
 
     enriched = await enrich_ad_fields(card.link_url, card.body_text)
@@ -44,11 +49,34 @@ async def upsert_ad(
 
     existing = await find_ad_by_library_id(session, card.library_id)
     if existing:
+        # Check moderation status — don't re-create moderation entry for
+        # already reviewed ads, and skip expensive field updates for rejected ones.
+        mod_entry = (await session.execute(
+            select(ModerationEntry).where(ModerationEntry.ad_id == existing.id)
+        )).scalar_one_or_none()
+
+        if mod_entry and mod_entry.status in (ModerationStatus.REJECTED, ModerationStatus.APPROVED):
+            # Only update temporal fields; don't touch content or create new queue entry
+            existing.is_active = card.is_active
+            existing.last_seen_at = now
+            existing.last_refresh_at = now
+            ref = existing.started_at or existing.first_seen_at
+            if ref:
+                ref = ref.replace(tzinfo=timezone.utc) if ref.tzinfo is None else ref
+                existing.days_active = max(0, (now - ref).days)
+            await session.flush()
+            logger.debug(f"skip {card.library_id}: already {mod_entry.status.value}")
+            return existing, False, True
+
         existing.is_active = card.is_active
         existing.last_seen_at = now
         existing.last_refresh_at = now
         if card.started_at and not existing.started_at:
             existing.started_at = card.started_at
+        ref = existing.started_at or existing.first_seen_at
+        if ref:
+            ref = ref.replace(tzinfo=timezone.utc) if ref.tzinfo is None else ref
+            existing.days_active = max(0, (now - ref).days)
         if not existing.vertical:
             existing.vertical = vertical
 
@@ -85,7 +113,7 @@ async def upsert_ad(
             existing.ip = enriched["ip"]
 
         await session.flush()
-        return existing, False
+        return existing, False, False
 
     ad = Ad(
         library_id=card.library_id,
@@ -118,7 +146,7 @@ async def upsert_ad(
     moderation = ModerationEntry(ad_id=ad.id, status=ModerationStatus.PENDING)
     session.add(moderation)
     await session.flush()
-    return ad, True
+    return ad, True, False
 
 
 async def save_creative(

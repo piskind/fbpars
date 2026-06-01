@@ -25,6 +25,8 @@ class ParsingConfigIn(BaseModel):
     vertical: str = "nutra"
     is_active: bool = True
     notes: str | None = None
+    partner: str | None = None
+    category: str | None = None
 
 
 ParsingConfigCreate = ParsingConfigIn
@@ -36,6 +38,8 @@ class ParsingConfigUpdate(BaseModel):
     vertical: str | None = None
     is_active: bool | None = None
     notes: str | None = None
+    partner: str | None = None
+    category: str | None = None
 
 
 class ParsingConfigOut(BaseModel):
@@ -46,6 +50,8 @@ class ParsingConfigOut(BaseModel):
     vertical: str
     is_active: bool
     notes: str | None
+    partner: str | None = None
+    category: str | None = None
     created_at: datetime
     updated_at: datetime
     ads_count: int = 0
@@ -140,3 +146,25 @@ class ClientUserMe(BaseModel):
     email_verified: bool
     created_at: datetime
     last_login_at: datetime | None
+
+
+class ModerationListOut(BaseModel):
+    items: list[ModerationItemOut]
+    total: int
+
+
+class ParserRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    triggered_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    status: str
+    stats: dict | None
+    log_tail: str | None = None
+
+
+class ParserStatusOut(BaseModel):
+    running: bool
+    last_run: ParserRunOut | None = None
+    recent_runs: list[ParserRunOut] = []

@@ -43,6 +43,8 @@ async def list_configs(
                 vertical=c.vertical,
                 is_active=c.is_active,
                 notes=c.notes,
+                partner=c.partner,
+                category=c.category,
                 created_at=c.created_at,
                 updated_at=c.updated_at,
                 ads_count=cnt,
@@ -64,6 +66,8 @@ async def create_config(
         vertical=body.vertical,
         is_active=body.is_active,
         notes=body.notes,
+        partner=body.partner,
+        category=body.category,
     )
     session.add(cfg)
     await session.commit()
@@ -75,6 +79,8 @@ async def create_config(
         vertical=cfg.vertical,
         is_active=cfg.is_active,
         notes=cfg.notes,
+        partner=cfg.partner,
+        category=cfg.category,
         created_at=cfg.created_at,
         updated_at=cfg.updated_at,
         ads_count=0,
@@ -103,6 +109,10 @@ async def update_config(
         cfg.notes = body.notes
     if body.vertical is not None:
         cfg.vertical = body.vertical
+    if body.partner is not None:
+        cfg.partner = body.partner
+    if body.category is not None:
+        cfg.category = body.category
 
     await session.commit()
     await session.refresh(cfg)
@@ -119,6 +129,8 @@ async def update_config(
         vertical=cfg.vertical,
         is_active=cfg.is_active,
         notes=cfg.notes,
+        partner=cfg.partner,
+        category=cfg.category,
         created_at=cfg.created_at,
         updated_at=cfg.updated_at,
         ads_count=row[0] or 0,

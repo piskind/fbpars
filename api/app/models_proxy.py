@@ -46,6 +46,8 @@ class ParsingConfig(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     vertical: Mapped[str] = mapped_column(String(32), default="nutra", index=True)
+    partner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -185,6 +187,18 @@ class ClientUser(Base):
     referral_source: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ParserRun(Base):
+    __tablename__ = "parser_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="triggered")
+    stats: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    log_tail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Proxy(Base):

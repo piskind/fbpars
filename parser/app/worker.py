@@ -56,10 +56,12 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
 
             async with AsyncSessionLocal() as session:
                 try:
-                    ad, is_new = await upsert_ad(session, card, config.country, config.keyword, config.vertical)
+                    ad, is_new, skipped = await upsert_ad(session, card, config.country, config.keyword, config.vertical)
                     await session.commit()
                     if is_new:
                         stats["new"] += 1
+                    elif skipped:
+                        stats["skipped_already_rejected"] = stats.get("skipped_already_rejected", 0) + 1
                     else:
                         stats["updated"] += 1
                 except Exception as e:
@@ -68,7 +70,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
                     stats["errors"] += 1
                     continue
 
-                if not is_new:
+                if not is_new or skipped:
                     continue
 
                 ad_id = ad.id

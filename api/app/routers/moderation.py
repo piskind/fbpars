@@ -4,35 +4,16 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.deps import get_current_admin
-from app.schemas import ModerationItemOut, ModerationActionIn
-from app.models_proxy import ModerationEntry, Ad, ModerationStatus
+from app.schemas import ModerationItemOut, ModerationActionIn, ModerationListOut
+from app.models_proxy import ModerationEntry, Ad, ModerationStatus, Creative
 from datetime import datetime, timezone
-from app.models_proxy import ModerationEntry, Ad, ModerationStatus
 
 
 router = APIRouter(prefix="/api/moderation", tags=["moderation"])
 
 
-@router.get("", response_model=list[ModerationItemOut])
-async def list_moderation(
-    status: str = Query("pending"),
-    country: str | None = Query(None),
-    keyword: str | None = Query(None),
-    is_active: bool | None = Query(None),
-    has_media: bool | None = Query(None),
-    search: str | None = Query(None),
-    limit: int = Query(50, le=200),
-    offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_session),
-    _=Depends(get_current_admin),
-):
-    stmt = (
-        select(ModerationEntry)
-        .join(Ad, ModerationEntry.ad_id == Ad.id)
-        .options(selectinload(ModerationEntry.ad).selectinload(Ad.creatives))
-        .where(ModerationEntry.status == status)
-    )
-
+def _apply_filters(stmt, Ad, ModerationEntry, Creative, status, country, keyword, is_active, has_media, search):
+    stmt = stmt.where(ModerationEntry.status == status)
     if country:
         stmt = stmt.where(Ad.country == country)
     if keyword:
@@ -47,15 +28,51 @@ async def list_moderation(
             | (Ad.library_id.ilike(like))
             | (Ad.display_url.ilike(like))
         )
+    if has_media is True:
+        stmt = stmt.where(
+            select(Creative.id).where(Creative.ad_id == Ad.id).correlate(Ad).exists()
+        )
+    elif has_media is False:
+        stmt = stmt.where(
+            ~select(Creative.id).where(Creative.ad_id == Ad.id).correlate(Ad).exists()
+        )
+    return stmt
 
-    stmt = stmt.order_by(ModerationEntry.created_at.desc()).limit(limit).offset(offset)
+
+@router.get("", response_model=ModerationListOut)
+async def list_moderation(
+    status: str = Query("pending"),
+    country: str | None = Query(None),
+    keyword: str | None = Query(None),
+    is_active: bool | None = Query(None),
+    has_media: bool | None = Query(None),
+    search: str | None = Query(None),
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_session),
+    _=Depends(get_current_admin),
+):
+    base = (
+        select(ModerationEntry)
+        .join(Ad, ModerationEntry.ad_id == Ad.id)
+    )
+    base = _apply_filters(base, Ad, ModerationEntry, Creative, status, country, keyword, is_active, has_media, search)
+
+    count_stmt = (
+        select(func.count(ModerationEntry.id))
+        .join(Ad, ModerationEntry.ad_id == Ad.id)
+    )
+    count_stmt = _apply_filters(count_stmt, Ad, ModerationEntry, Creative, status, country, keyword, is_active, has_media, search)
+    total = (await session.execute(count_stmt)).scalar_one()
+
+    stmt = (
+        base
+        .options(selectinload(ModerationEntry.ad).selectinload(Ad.creatives))
+        .order_by(ModerationEntry.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     items = list((await session.execute(stmt)).scalars().all())
-
-    if has_media is not None:
-        if has_media:
-            items = [i for i in items if i.ad.creatives]
-        else:
-            items = [i for i in items if not i.ad.creatives]
 
     phashes = set()
     for item in items:
@@ -65,10 +82,8 @@ async def list_moderation(
 
     dupe_counts: dict[str, int] = {}
     if phashes:
-        from app.models_proxy import Creative
-        from sqlalchemy import func as sa_func
         rows = (await session.execute(
-            select(Creative.phash, sa_func.count(Creative.id))
+            select(Creative.phash, func.count(Creative.id))
             .where(Creative.phash.in_(phashes))
             .group_by(Creative.phash)
         )).all()
@@ -81,7 +96,8 @@ async def list_moderation(
                 max_dupes = dupe_counts[c.phash] - 1
         item.ad.duplicates_count = max_dupes
 
-    return items
+    return ModerationListOut(items=items, total=total)
+
 
 @router.get("/facets")
 async def facets(

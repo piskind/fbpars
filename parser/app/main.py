@@ -1,6 +1,76 @@
 import asyncio
+from datetime import datetime, timezone
 from loguru import logger
 from app.config import settings
+
+
+async def _run_discovery(run_id: int) -> None:
+    from app.db import AsyncSessionLocal
+    from app.models import ParserRun
+    from app.worker import run_once
+
+    log_lines: list[str] = []
+
+    def _log_sink(message: object) -> None:
+        line = str(message).rstrip()
+        log_lines.append(line)
+        if len(log_lines) > 600:
+            log_lines.pop(0)
+
+    sink_id = logger.add(_log_sink, format="{time:HH:mm:ss} | {level} | {message}", colorize=False)
+    try:
+        stats = await run_once()
+    except Exception as exc:
+        logger.error(f"[discovery] fatal: {exc}")
+        stats = {"error": str(exc)}
+        status = "failed"
+    else:
+        status = "done"
+    finally:
+        logger.remove(sink_id)
+
+    async with AsyncSessionLocal() as session:
+        run = await session.get(ParserRun, run_id)
+        if run:
+            run.status = status
+            run.finished_at = datetime.now(timezone.utc)
+            run.stats = stats
+            run.log_tail = "\n".join(log_lines[-300:])
+            await session.commit()
+
+
+async def _discovery_poll_loop() -> None:
+    from app.db import AsyncSessionLocal
+    from app.models import ParserRun
+    from sqlalchemy import select
+
+    logger.info("[discovery-poll] started, polling every 15s")
+    while True:
+        await asyncio.sleep(15)
+        try:
+            async with AsyncSessionLocal() as session:
+                run = (await session.execute(
+                    select(ParserRun)
+                    .where(ParserRun.status == "triggered")
+                    .order_by(ParserRun.triggered_at)
+                    .limit(1)
+                )).scalar_one_or_none()
+
+                if run:
+                    run.status = "running"
+                    run.started_at = datetime.now(timezone.utc)
+                    await session.commit()
+                    run_id = run.id
+                else:
+                    run_id = None
+
+            if run_id:
+                logger.info(f"[discovery-poll] starting run #{run_id}")
+                await _run_discovery(run_id)
+                logger.info(f"[discovery-poll] run #{run_id} finished")
+
+        except Exception as exc:
+            logger.error(f"[discovery-poll] error: {exc}")
 
 
 async def main():
@@ -10,13 +80,19 @@ async def main():
     logger.info(f"S3 bucket: {settings.s3_bucket}")
 
     import httpx
-    async with httpx.AsyncClient(proxy=settings.proxy_http_gateway, timeout=30) as client:
-        resp = await client.get("https://api.ipify.org")
-        logger.info(f"Our IP via proxy: {resp.text}")
+    try:
+        async with httpx.AsyncClient(proxy=settings.proxy_http_gateway, timeout=30) as client:
+            resp = await client.get("https://api.ipify.org")
+            logger.info(f"Our IP via proxy: {resp.text}")
+    except Exception as exc:
+        logger.warning(f"IP check failed: {exc}")
 
     from app.refresh_worker import run_refresh_loop
-    logger.info("Starting refresh loop")
-    await run_refresh_loop()
+    logger.info("Starting refresh loop + discovery poll loop")
+    await asyncio.gather(
+        run_refresh_loop(),
+        _discovery_poll_loop(),
+    )
 
 
 if __name__ == "__main__":
