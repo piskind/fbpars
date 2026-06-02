@@ -5,8 +5,8 @@ from app.config import settings
 from app.routers import auth, configs, moderation, users, media, stats, client_auth, feed, parser
 
 
-async def _ensure_parser_runs_table():
-    """Create parser_runs table if it doesn't exist yet (no alembic in api container)."""
+async def _ensure_schema():
+    """Apply missing DDL that alembic may not have run yet (no alembic in api container)."""
     from app.db import engine
     from sqlalchemy import text
     async with engine.begin() as conn:
@@ -21,11 +21,17 @@ async def _ensure_parser_runs_table():
                 log_tail TEXT
             )
         """))
+        await conn.execute(text(
+            "ALTER TABLE parsing_configs ADD COLUMN IF NOT EXISTS partner TEXT"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE parsing_configs ADD COLUMN IF NOT EXISTS category TEXT"
+        ))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await _ensure_parser_runs_table()
+    await _ensure_schema()
     yield
 
 
