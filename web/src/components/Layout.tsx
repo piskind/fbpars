@@ -8,7 +8,7 @@ export function Layout({ children }: { children: ReactNode }) {
 
   const handleLogout = () => {
     signOut()
-    navigate('/login')
+    navigate('/admin/login')
   }
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
@@ -25,22 +25,22 @@ export function Layout({ children }: { children: ReactNode }) {
           FB Spy Admin
         </Link>
         <nav className="flex-1 space-y-1">
-          <NavLink to="/" end className={linkClass}>
+          <NavLink to="/admin" end className={linkClass}>
             Главная
           </NavLink>
-          <NavLink to="/moderation" className={linkClass}>
+          <NavLink to="/admin/moderation" className={linkClass}>
             Модерация
           </NavLink>
-          <NavLink to="/trash" className={linkClass}>
+          <NavLink to="/admin/trash" className={linkClass}>
             Мусор
           </NavLink>
-          <NavLink to="/configs" className={linkClass}>
+          <NavLink to="/admin/configs" className={linkClass}>
             Парсинг
           </NavLink>
-          <NavLink to="/users" className={linkClass}>
+          <NavLink to="/admin/users" className={linkClass}>
             Пользователи
           </NavLink>
-          <NavLink to="/parser" className={linkClass}>
+          <NavLink to="/admin/parser" className={linkClass}>
             Парсер
           </NavLink>
         </nav>
