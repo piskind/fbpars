@@ -39,10 +39,15 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
             raw_cards = await scroll_and_collect(page, max_scrolls=30)
             stats["raw"] = len(raw_cards)
 
+        seen_ids: set[str] = set()
         for raw in raw_cards:
             card = parse_card_text(raw["text"])
             if not card.library_id:
                 continue
+            if card.library_id in seen_ids:
+                stats["skipped_duplicate"] = stats.get("skipped_duplicate", 0) + 1
+                continue
+            seen_ids.add(card.library_id)
             card.image_urls = [img["src"] for img in raw["images"]]
             card.video_urls = [v["src"] for v in raw["videos"] if v["src"]]
             card.poster_urls = [v["poster"] for v in raw["videos"] if v["poster"]]
