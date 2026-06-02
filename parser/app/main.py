@@ -4,6 +4,25 @@ from loguru import logger
 from app.config import settings
 
 
+async def _flush_logs(run_id: int, log_lines: list[str]) -> None:
+    from app.db import AsyncSessionLocal
+    from app.models import ParserRun
+    async with AsyncSessionLocal() as session:
+        run = await session.get(ParserRun, run_id)
+        if run:
+            run.log_tail = "\n".join(log_lines[-300:])
+            await session.commit()
+
+
+async def _log_flush_loop(run_id: int, log_lines: list[str], stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        await asyncio.sleep(10)
+        try:
+            await _flush_logs(run_id, log_lines)
+        except Exception:
+            pass
+
+
 async def _run_discovery(run_id: int) -> None:
     from app.db import AsyncSessionLocal
     from app.models import ParserRun
@@ -18,6 +37,8 @@ async def _run_discovery(run_id: int) -> None:
             log_lines.pop(0)
 
     sink_id = logger.add(_log_sink, format="{time:HH:mm:ss} | {level} | {message}", colorize=False)
+    stop = asyncio.Event()
+    flush_task = asyncio.create_task(_log_flush_loop(run_id, log_lines, stop))
     try:
         stats = await run_once()
     except Exception as exc:
@@ -28,6 +49,8 @@ async def _run_discovery(run_id: int) -> None:
         status = "done"
     finally:
         logger.remove(sink_id)
+        stop.set()
+        await flush_task
 
     async with AsyncSessionLocal() as session:
         run = await session.get(ParserRun, run_id)
