@@ -149,6 +149,7 @@ async def run_once(limit: int | None = None) -> None:
             await rotate_ip()
 
     logger.info(f"=== WORKER FINISHED. Totals: {total} ===")
+    return total
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ async def _run_discovery(run_id: int) -> None:
             if run.status != "cancelled":
                 run.status = status
                 run.finished_at = datetime.now(timezone.utc)
-                run.stats = stats
+            run.stats = stats
             run.log_tail = "\n".join(log_lines[-300:])
             await session.commit()
 
