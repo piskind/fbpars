@@ -38,6 +38,7 @@ const STATUS_COLORS: Record<string, string> = {
   running: 'bg-blue-100 text-blue-700',
   done: 'bg-green-100 text-green-700',
   failed: 'bg-red-100 text-red-700',
+  cancelled: 'bg-gray-100 text-gray-500',
 }
 
 export default function ParserPage() {
@@ -60,6 +61,13 @@ export default function ParserPage() {
 
   const start = useMutation({
     mutationFn: async () => (await api.post('/parser/start', {})).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['parser-status'] })
+    },
+  })
+
+  const cancel = useMutation({
+    mutationFn: async () => (await api.post('/parser/cancel', {})).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['parser-status'] })
     },
@@ -88,7 +96,16 @@ export default function ParserPage() {
           </div>
         )}
 
-        <div className="ml-auto">
+        <div className="ml-auto flex gap-2">
+          {isRunning && (
+            <button
+              onClick={() => cancel.mutate()}
+              disabled={cancel.isPending}
+              className="px-5 py-2 bg-red-100 text-red-700 rounded-lg text-sm hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {cancel.isPending ? 'Отмена...' : '✕ Отменить'}
+            </button>
+          )}
           <button
             onClick={() => start.mutate()}
             disabled={isRunning || start.isPending}
@@ -104,6 +121,15 @@ export default function ParserPage() {
           {(() => {
             const e = start.error as { response?: { data?: { detail?: string } }; message?: string } | null
             return e?.response?.data?.detail ?? e?.message ?? 'Ошибка запуска'
+          })()}
+        </div>
+      )}
+
+      {cancel.isError && (
+        <div className="mb-4 px-4 py-2 bg-red-50 text-red-700 rounded-lg text-sm">
+          {(() => {
+            const e = cancel.error as { response?: { data?: { detail?: string } }; message?: string } | null
+            return e?.response?.data?.detail ?? e?.message ?? 'Ошибка отмены'
           })()}
         </div>
       )}

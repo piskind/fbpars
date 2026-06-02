@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +47,28 @@ async def start_parser(
     await session.commit()
     await session.refresh(run)
     return run
+
+
+@router.post("/cancel", response_model=ParserRunOut)
+async def cancel_parser(
+    session: AsyncSession = Depends(get_session),
+    _=Depends(get_current_admin),
+):
+    try:
+        active = (await session.execute(
+            select(ParserRun).where(ParserRun.status.in_(["triggered", "running"]))
+        )).scalar_one_or_none()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB unavailable: {e}")
+
+    if not active:
+        raise HTTPException(status_code=404, detail="Нет активных запусков")
+
+    active.status = "cancelled"
+    active.finished_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(active)
+    return active
 
 
 @router.get("/logs", response_model=dict)

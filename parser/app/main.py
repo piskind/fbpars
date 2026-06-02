@@ -32,9 +32,10 @@ async def _run_discovery(run_id: int) -> None:
     async with AsyncSessionLocal() as session:
         run = await session.get(ParserRun, run_id)
         if run:
-            run.status = status
-            run.finished_at = datetime.now(timezone.utc)
-            run.stats = stats
+            if run.status != "cancelled":
+                run.status = status
+                run.finished_at = datetime.now(timezone.utc)
+                run.stats = stats
             run.log_tail = "\n".join(log_lines[-300:])
             await session.commit()
 
