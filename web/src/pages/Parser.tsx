@@ -101,7 +101,10 @@ export default function ParserPage() {
 
       {start.isError && (
         <div className="mb-4 px-4 py-2 bg-red-50 text-red-700 rounded-lg text-sm">
-          {(start.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Ошибка запуска'}
+          {(() => {
+            const e = start.error as { response?: { data?: { detail?: string } }; message?: string } | null
+            return e?.response?.data?.detail ?? e?.message ?? 'Ошибка запуска'
+          })()}
         </div>
       )}
 
