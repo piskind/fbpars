@@ -40,6 +40,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
             stats["raw"] = len(raw_cards)
 
         seen_ids: set[str] = set()
+        ad_id: int | None = None
         for raw in raw_cards:
             card = parse_card_text(raw["text"])
             if not card.library_id:
@@ -100,7 +101,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
                 else:
                     stats["media_fail"] += 1
 
-        async with AsyncSessionLocal() as session:
+            async with AsyncSessionLocal() as session:
                 from sqlalchemy import select, func
                 from app.models import Creative
                 cnt = await session.scalar(

@@ -35,7 +35,7 @@ async def send_verification_email(to_email: str, token: str) -> bool:
         import resend
         resend.api_key = settings.resend_api_key
         params: resend.Emails.SendParams = {
-            "from": "noreply@spyon.top",
+            "from": "noreply@mail.spyon.top",
             "to": [to_email],
             "subject": "Подтвердите email для FB Spy",
             "html": html_body,
