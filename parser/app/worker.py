@@ -55,7 +55,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
             card.page_url = raw["page_url"]
             card.link_url = raw["external_url"]
 
-            if not card.image_urls and not card.video_urls:
+            if not card.image_urls and not card.video_urls and not card.poster_urls:
                 logger.info(f"[#{config.id}] skip {card.library_id}: no media in card")
                 stats["skipped_no_media"] = stats.get("skipped_no_media", 0) + 1
                 continue
@@ -100,6 +100,17 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
                     stats["media_ok"] += 1
                 else:
                     stats["media_fail"] += 1
+
+            if not card.image_urls and not card.video_urls:
+                for idx, poster_url in enumerate(card.poster_urls[:2]):
+                    upload = await uploader.upload_image(card.library_id, poster_url, idx)
+                    if upload:
+                        async with AsyncSessionLocal() as session:
+                            await save_creative(session, ad_id, AdMediaType.IMAGE, upload)
+                            await session.commit()
+                        stats["media_ok"] += 1
+                    else:
+                        stats["media_fail"] += 1
 
             async with AsyncSessionLocal() as session:
                 from sqlalchemy import select, func
