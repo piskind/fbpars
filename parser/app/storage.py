@@ -85,6 +85,7 @@ class MediaUploader:
                     "width": width,
                     "height": height,
                     "file_size": len(data),
+                    "reused": True,
                 }
 
         key = _s3_key(library_id, ext, idx, "img")

@@ -81,23 +81,31 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
 
                 ad_id = ad.id
 
+            all_reused = True
+            media_saved = 0
+
             for idx, img_url in enumerate(card.image_urls[:3]):
                 upload = await uploader.upload_image(card.library_id, img_url, idx)
                 if upload:
+                    if not upload.get("reused"):
+                        all_reused = False
                     async with AsyncSessionLocal() as session:
                         await save_creative(session, ad_id, AdMediaType.IMAGE, upload)
                         await session.commit()
                     stats["media_ok"] += 1
+                    media_saved += 1
                 else:
                     stats["media_fail"] += 1
 
             for idx, vid_url in enumerate(card.video_urls[:2]):
                 upload = await uploader.upload_video(card.library_id, vid_url, idx)
                 if upload:
+                    all_reused = False  # videos are never reused
                     async with AsyncSessionLocal() as session:
                         await save_creative(session, ad_id, AdMediaType.VIDEO, upload)
                         await session.commit()
                     stats["media_ok"] += 1
+                    media_saved += 1
                 else:
                     stats["media_fail"] += 1
 
@@ -105,12 +113,28 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
                 for idx, poster_url in enumerate(card.poster_urls[:2]):
                     upload = await uploader.upload_image(card.library_id, poster_url, idx)
                     if upload:
+                        if not upload.get("reused"):
+                            all_reused = False
                         async with AsyncSessionLocal() as session:
                             await save_creative(session, ad_id, AdMediaType.IMAGE, upload)
                             await session.commit()
                         stats["media_ok"] += 1
+                        media_saved += 1
                     else:
                         stats["media_fail"] += 1
+
+            if all_reused and media_saved > 0:
+                async with AsyncSessionLocal() as session:
+                    db_ad = await session.get(Ad, ad_id)
+                    if db_ad:
+                        await session.delete(db_ad)
+                        await session.commit()
+                stats["new"] -= 1
+                stats["media_ok"] -= media_saved
+                stats["skipped_phash_duplicate"] = stats.get("skipped_phash_duplicate", 0) + 1
+                logger.info(f"[#{config.id}] skipped {card.library_id}: visual duplicate (phash)")
+                ad_id = None
+                continue
 
             async with AsyncSessionLocal() as session:
                 from sqlalchemy import select, func
