@@ -25,7 +25,7 @@ async def list_configs(
             Ad.country,
             Ad.keyword,
             func.count(Ad.id).label("cnt"),
-            func.max(Ad.first_seen_at).label("last"),
+            func.max(Ad.last_seen_at).label("last"),
         )
         .group_by(Ad.country, Ad.keyword)
     )

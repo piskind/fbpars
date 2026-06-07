@@ -55,18 +55,7 @@ async def upsert_ad(
             select(ModerationEntry).where(ModerationEntry.ad_id == existing.id)
         )).scalar_one_or_none()
 
-        if mod_entry and mod_entry.status in (ModerationStatus.REJECTED, ModerationStatus.APPROVED):
-            # Only update temporal fields; don't touch content or create new queue entry
-            existing.is_active = card.is_active
-            existing.last_seen_at = now
-            existing.last_refresh_at = now
-            ref = existing.started_at or existing.first_seen_at
-            if ref:
-                ref = ref.replace(tzinfo=timezone.utc) if ref.tzinfo is None else ref
-                existing.days_active = max(0, (now - ref).days)
-            await session.flush()
-            logger.debug(f"skip {card.library_id}: already {mod_entry.status.value}")
-            return existing, False, True
+        is_reviewed = mod_entry and mod_entry.status in (ModerationStatus.REJECTED, ModerationStatus.APPROVED)
 
         existing.is_active = card.is_active
         existing.last_seen_at = now
@@ -113,7 +102,8 @@ async def upsert_ad(
             existing.ip = enriched["ip"]
 
         await session.flush()
-        return existing, False, False
+        logger.debug(f"updated {card.library_id}: reviewed={is_reviewed}")
+        return existing, False, is_reviewed
 
     ad = Ad(
         library_id=card.library_id,
