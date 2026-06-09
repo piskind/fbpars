@@ -51,5 +51,6 @@ def build_library_url(country: str, keyword: str) -> str:
 def build_library_url_country_only(country: str) -> str:
     return (
         "https://www.facebook.com/ads/library/"
-        f"?active_status=all&ad_type=all&country={country}&media_type=all"
+        f"?active_status=all&ad_type=all&country={country}"
+        f"&q=%25&search_type=keyword_unordered&media_type=all"
     )
