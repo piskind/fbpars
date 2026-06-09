@@ -121,6 +121,17 @@ EXTRACT_SCRIPT = """
             }
         }
 
+        if (!externalUrl) {
+            for (const node of el.querySelectorAll('[data-lynx-uri], [data-store]')) {
+                const uri = node.getAttribute('data-lynx-uri');
+                if (uri && !uri.includes('facebook.com')) { externalUrl = uri; break; }
+                try {
+                    const store = JSON.parse(node.getAttribute('data-store') || '{}');
+                    if (store.url && !store.url.includes('facebook.com')) { externalUrl = store.url; break; }
+                } catch(e) {}
+            }
+        }
+
         const platforms = extractPlatforms(el);
 
         results.push({

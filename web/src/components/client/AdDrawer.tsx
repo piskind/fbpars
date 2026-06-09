@@ -176,17 +176,21 @@ export function AdDrawer({ adId, onClose }: Props) {
             )}
 
             {/* Ссылка */}
-            {ad.link_url && (
+            {(ad.link_url || ad.display_url) && (
               <div className="border-t pt-3">
                 <div className="text-[11px] uppercase text-gray-400 mb-1">Ссылка</div>
-                <a
-                  href={ad.link_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-blue-600 hover:underline break-all"
-                >
-                  {ad.display_url || ad.link_url}
-                </a>
+                {ad.link_url ? (
+                  <a
+                    href={ad.link_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-blue-600 hover:underline break-all"
+                  >
+                    {ad.link_url}
+                  </a>
+                ) : (
+                  <span className="text-sm text-gray-500 break-all">{ad.display_url}</span>
+                )}
               </div>
             )}
 
