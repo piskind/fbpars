@@ -181,7 +181,7 @@ MEMORY_SCRIPT = """
 async def scroll_and_count(
     page: Page,
     max_scrolls: int = 200,
-    stable_rounds: int = 3,
+    stable_rounds: int = 7,
     log_every: int = 10,
 ) -> int:
     """
@@ -203,6 +203,7 @@ async def scroll_and_count(
 
     for i in range(max_scrolls):
         new_height = await page.evaluate(SCROLL_SCRIPT)
+        height_delta = new_height - last_height
         result = await page.evaluate(COUNT_SCRIPT)
         current_count = result["count"]
         current_sample = result["sample"]
@@ -226,14 +227,19 @@ async def scroll_and_count(
             mem = await page.evaluate(MEMORY_SCRIPT)
             mem_str = f" | mem={mem['used_mb']}/{mem['total_mb']}MB" if mem else ""
             logger.info(
-                f"[count] scroll={i + 1} | dom={current_count} | peak={peak_count} | "
+                f"[count] scroll={i + 1} | height_delta={height_delta:+} | "
+                f"dom={current_count} | peak={peak_count} | "
                 f"elapsed={elapsed:.0f}s | rate={rate:.0f} ads/min{mem_str}"
             )
 
         if current_count == prev_count and new_height == last_height:
             stable += 1
             if stable >= stable_rounds:
-                logger.info(f"[count] End of feed at scroll {i + 1} (stable for {stable_rounds} rounds)")
+                logger.info(
+                    f"[count] End of feed at scroll {i + 1} — "
+                    f"height stable for {stable_rounds} consecutive rounds "
+                    f"(FB stopped loading new content)"
+                )
                 break
         else:
             stable = 0

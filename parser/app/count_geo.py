@@ -19,7 +19,7 @@ from app.browser import browser_context, build_library_url_country_only
 from app.parsers.library_extractor import scroll_and_count
 
 
-async def run(country: str, max_scrolls: int) -> None:
+async def run(country: str, max_scrolls: int, stable_rounds: int) -> None:
     url = build_library_url_country_only(country)
     logger.info(f"[count_geo] country={country} max_scrolls={max_scrolls}")
     logger.info(f"[count_geo] url={url}")
@@ -40,12 +40,13 @@ async def run(country: str, max_scrolls: int) -> None:
             return
 
         await asyncio.sleep(5)
-        await scroll_and_count(page, max_scrolls=max_scrolls)
+        await scroll_and_count(page, max_scrolls=max_scrolls, stable_rounds=stable_rounds)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Count Ad Library ads for a country (no DB/S3 writes)")
     parser.add_argument("--country", required=True, help="ISO country code, e.g. AM, CY, DE")
     parser.add_argument("--max_scrolls", type=int, default=200, help="Safety cap on scroll iterations")
+    parser.add_argument("--stable_rounds", type=int, default=7, help="Consecutive stable scrolls before stopping")
     args = parser.parse_args()
-    asyncio.run(run(args.country, args.max_scrolls))
+    asyncio.run(run(args.country, args.max_scrolls, args.stable_rounds))
