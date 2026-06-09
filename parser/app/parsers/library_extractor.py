@@ -89,7 +89,10 @@ EXTRACT_SCRIPT = """
             });
 
         const vids = Array.from(el.querySelectorAll('video'))
-            .map(v => ({src: v.src || v.currentSrc, poster: v.poster}))
+            .map(v => ({
+                src: v.src || v.currentSrc || v.querySelector('source')?.src || '',
+                poster: v.poster
+            }))
             .filter(v => v.src || v.poster);
 
         const anchors = Array.from(el.querySelectorAll('a[href]'));
@@ -284,6 +287,16 @@ async def scroll_and_collect(
         seen_count = current_count
         last_height = new_height
         await asyncio.sleep(1.5)
+
+    await page.evaluate("""
+        () => {
+            for (const v of document.querySelectorAll('video')) {
+                const src = v.src || v.currentSrc || v.querySelector('source')?.src;
+                if (!src) v.scrollIntoView({behavior: 'instant', block: 'center'});
+            }
+        }
+    """)
+    await asyncio.sleep(2)
 
     final_cards = await page.evaluate(EXTRACT_SCRIPT)
     logger.info(f"Total extracted: {len(final_cards)} cards")
