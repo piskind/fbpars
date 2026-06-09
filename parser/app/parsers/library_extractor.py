@@ -137,19 +137,33 @@ EXTRACT_SCRIPT = """
 COUNT_SCRIPT = """
 () => {
     const seen = new Set();
-    for (const el of document.querySelectorAll('div')) {
+    const all = document.querySelectorAll('div');
+    for (const el of all) {
         const txt = el.innerText || '';
         if (!txt.includes('Library ID:')) continue;
         if (!txt.includes('Sponsored')) continue;
-        if (txt.length > 5000 || txt.length < 100) continue;
+        if (txt.length > 5000) continue;
+        if (txt.length < 100) continue;
         const idx = txt.indexOf('Library ID:');
-        const after = txt.slice(idx + 11).trim();
-        const m = after.match(/^(\\d+)/);
-        if (!m) continue;
-        if ((txt.match(/Library ID:/g) || []).length > 1) continue;
-        seen.add(m[1]);
+        const after = txt.slice(idx + 'Library ID:'.length).trim();
+        const idMatch = after.match(/^(\\d+)/);
+        if (!idMatch) continue;
+        const id = idMatch[1];
+        if (seen.has(id)) continue;
+        const idCount = (txt.match(/Library ID:/g) || []).length;
+        if (idCount > 1) continue;
+        seen.add(id);
     }
-    return seen.size;
+    return {count: seen.size, sample: Array.from(seen).slice(0, 5)};
+}
+"""
+
+FB_RESULTS_LABEL_SCRIPT = """
+() => {
+    const el = [...document.querySelectorAll('*')].find(
+        e => /result|результат/i.test(e.innerText) && e.innerText.length < 50
+    );
+    return el ? el.innerText.trim() : 'not found';
 }
 """
 
@@ -184,9 +198,17 @@ async def scroll_and_count(
     stable = 0
     last_height = 0
 
+    fb_label = await page.evaluate(FB_RESULTS_LABEL_SCRIPT)
+    logger.info(f"[count] FB results label: {fb_label!r}")
+
     for i in range(max_scrolls):
         new_height = await page.evaluate(SCROLL_SCRIPT)
-        current_count = await page.evaluate(COUNT_SCRIPT)
+        result = await page.evaluate(COUNT_SCRIPT)
+        current_count = result["count"]
+        current_sample = result["sample"]
+
+        if i == 0 and current_sample:
+            logger.info(f"[count] sample Library IDs at scroll 1: {current_sample}")
 
         if current_count < prev_count:
             logger.warning(
