@@ -28,10 +28,30 @@ async def run(country: str, max_scrolls: int) -> None:
         page = await context.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
 
+        # --- diagnostics: run before wait_for_selector to capture whatever FB loaded ---
+        logger.info(f"[diag] final url after goto: {page.url}")
+
+        lang = await page.evaluate("document.documentElement.lang")
+        logger.info(f"[diag] page lang: {lang!r}")
+
+        body_preview = await page.evaluate("document.body.innerText.slice(0, 500)")
+        logger.info(f"[diag] body text preview:\n{body_preview}")
+
+        debug_prefix = f"/app/debug_{country}"
+        await page.screenshot(path=f"{debug_prefix}.png", full_page=False)
+        logger.info(f"[diag] screenshot saved: {debug_prefix}.png")
+
+        html = await page.content()
+        with open(f"{debug_prefix}.html", "w", encoding="utf-8") as fh:
+            fh.write(html)
+        logger.info(f"[diag] HTML saved: {debug_prefix}.html ({len(html)} bytes)")
+        # --- end diagnostics ---
+
         try:
             await page.wait_for_selector('div:has-text("Library ID")', timeout=20_000)
         except Exception:
             logger.warning("[count_geo] No ads found on page — geo may be empty or blocked")
+            logger.warning("[count_geo] Check screenshot and HTML in /app/ for clues")
             return
 
         await asyncio.sleep(5)
