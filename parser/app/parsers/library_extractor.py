@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from playwright.async_api import Page
 from loguru import logger
 
@@ -131,6 +132,101 @@ EXTRACT_SCRIPT = """
     return results;
 }
 """
+
+
+COUNT_SCRIPT = """
+() => {
+    const seen = new Set();
+    for (const el of document.querySelectorAll('div')) {
+        const txt = el.innerText || '';
+        if (!txt.includes('Library ID:')) continue;
+        if (!txt.includes('Sponsored')) continue;
+        if (txt.length > 5000 || txt.length < 100) continue;
+        const idx = txt.indexOf('Library ID:');
+        const after = txt.slice(idx + 11).trim();
+        const m = after.match(/^(\\d+)/);
+        if (!m) continue;
+        if ((txt.match(/Library ID:/g) || []).length > 1) continue;
+        seen.add(m[1]);
+    }
+    return seen.size;
+}
+"""
+
+MEMORY_SCRIPT = """
+() => {
+    if (!performance || !performance.memory) return null;
+    return {
+        used_mb: Math.round(performance.memory.usedJSHeapSize / 1048576),
+        total_mb: Math.round(performance.memory.totalJSHeapSize / 1048576),
+    };
+}
+"""
+
+
+async def scroll_and_count(
+    page: Page,
+    max_scrolls: int = 200,
+    stable_rounds: int = 3,
+    log_every: int = 10,
+) -> int:
+    """
+    Scroll Ad Library without extracting card data — counts unique Library IDs
+    visible in the DOM at each step.
+
+    FB's virtual DOM evicts old cards during long scrolls, so the counter may
+    drop. Eviction events are logged explicitly. The goal is to measure scroll
+    throughput (ads/min) and find the DOM retention ceiling, not get a total count.
+    """
+    started = datetime.now()
+    prev_count = 0
+    peak_count = 0
+    stable = 0
+    last_height = 0
+
+    for i in range(max_scrolls):
+        new_height = await page.evaluate(SCROLL_SCRIPT)
+        current_count = await page.evaluate(COUNT_SCRIPT)
+
+        if current_count < prev_count:
+            logger.warning(
+                f"[count] DOM eviction detected at scroll {i + 1}, "
+                f"count dropped {prev_count}→{current_count}"
+            )
+
+        if current_count > peak_count:
+            peak_count = current_count
+
+        should_log = (i + 1) % log_every == 0 or current_count != prev_count
+        if should_log:
+            elapsed = (datetime.now() - started).total_seconds()
+            rate = peak_count / elapsed * 60 if elapsed > 0 else 0
+            mem = await page.evaluate(MEMORY_SCRIPT)
+            mem_str = f" | mem={mem['used_mb']}/{mem['total_mb']}MB" if mem else ""
+            logger.info(
+                f"[count] scroll={i + 1} | dom={current_count} | peak={peak_count} | "
+                f"elapsed={elapsed:.0f}s | rate={rate:.0f} ads/min{mem_str}"
+            )
+
+        if current_count == prev_count and new_height == last_height:
+            stable += 1
+            if stable >= stable_rounds:
+                logger.info(f"[count] End of feed at scroll {i + 1} (stable for {stable_rounds} rounds)")
+                break
+        else:
+            stable = 0
+
+        prev_count = current_count
+        last_height = new_height
+        await asyncio.sleep(1.5)
+
+    elapsed = (datetime.now() - started).total_seconds()
+    rate = peak_count / elapsed * 60 if elapsed > 0 else 0
+    logger.info(
+        f"[count] DONE | dom_final={prev_count} | peak={peak_count} | "
+        f"time={elapsed:.0f}s ({elapsed / 60:.1f}min) | rate={rate:.0f} ads/min"
+    )
+    return peak_count
 
 
 async def scroll_and_collect(

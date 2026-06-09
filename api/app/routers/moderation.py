@@ -45,7 +45,7 @@ async def list_moderation(
     country: str | None = Query(None),
     keyword: str | None = Query(None),
     is_active: bool | None = Query(None),
-    has_media: bool | None = Query(None),
+    has_media: bool | None = Query(True),
     search: str | None = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
