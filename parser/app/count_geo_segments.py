@@ -97,9 +97,11 @@ async def _fetch_once(context, url: str) -> tuple[str, bool]:
     page = await context.new_page()
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+
         html = await page.content()
         if "__rd_verify" in html:
             return "not found", True
+
         try:
             await page.wait_for_selector(
                 'div:has-text("Library ID"), div:has-text("No results")',
@@ -107,8 +109,33 @@ async def _fetch_once(context, url: str) -> tuple[str, bool]:
             )
         except Exception:
             pass
-        await asyncio.sleep(3)
-        label = await page.evaluate(FB_RESULTS_LABEL_SCRIPT)
+
+        # Wait for network to settle — __rd_verify triggers location.reload()
+        # which destroys the JS context mid-evaluate if we don't wait it out.
+        try:
+            await page.wait_for_load_state("networkidle", timeout=8_000)
+        except Exception:
+            pass
+
+        # Re-check: challenge may have triggered a reload after initial load
+        try:
+            html2 = await page.content()
+            if "__rd_verify" in html2:
+                return "not found", True
+        except Exception:
+            return "not found", True  # page is navigating — treat as challenge
+
+        await asyncio.sleep(1)
+
+        try:
+            label = await page.evaluate(FB_RESULTS_LABEL_SCRIPT)
+        except Exception as e:
+            msg = str(e).lower()
+            if "execution context" in msg or "destroyed" in msg or "navigation" in msg:
+                logger.warning("    JS context destroyed during evaluate (navigation) — treating as challenge")
+                return "not found", True
+            raise
+
         return label, False
     finally:
         await page.close()
@@ -195,7 +222,11 @@ async def run(country: str, from_ym: str, to_ym: str) -> None:
     results: list[Seg] = []
     async with browser_context() as context:
         for d_min, d_max in segments:
-            seg = await measure(context, country, d_min, d_max)
+            try:
+                seg = await measure(context, country, d_min, d_max)
+            except Exception as e:
+                logger.error(f"Unhandled exception for {d_min}→{d_max}: {e}")
+                seg = Seg(d_min=d_min, d_max=d_max, count=0, label="CRASHED", failed=True)
             results.append(seg)
 
     total = sum(r.count for r in results)
@@ -217,7 +248,10 @@ async def run(country: str, from_ym: str, to_ym: str) -> None:
     if failed:
         print(f"\n  ❌ {len(failed)} segment(s) FAILED — actual total is HIGHER than shown")
     if capped:
-        print(f"  ⚠  {len(capped)} day-level cap(s) — those days still show >{CAP:,}")
+        print(f"\n  ⚠  {len(capped)} day-level cap(s) hit (single day still >{CAP:,})")
+        print(f"     This geo has >{CAP:,} ads per single day.")
+        print(f"     Date-based segmentation CANNOT produce an exact total — the ceiling")
+        print(f"     cannot be resolved by splitting dates further.")
     if not failed and not capped:
         print(f"\n  ✓ All segments resolved below {CAP:,} — total is exact")
     print("=" * W)
