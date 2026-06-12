@@ -30,12 +30,13 @@ async def browser_context():
                     "--disable-gpu",
                     "--disable-software-rasterizer",
                     "--disable-extensions",
-                    "--disable-background-networking",
-                    "--disable-default-apps",
-                    "--js-flags=--max-old-space-size=512",
+                    "--disable-background-timer-throttling",
+                    "--disable-renderer-backgrounding",
+                    "--disable-backgrounding-occluded-windows",
+                    "--js-flags=--max-old-space-size=768",
                     "--disk-cache-size=1",
                     "--media-cache-size=1",
-                    "--renderer-process-limit=2",
+                    "--renderer-process-limit=1",
                 ],
             )
             context: BrowserContext = await browser.new_context(

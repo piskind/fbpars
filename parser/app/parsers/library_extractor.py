@@ -1,7 +1,12 @@
 import asyncio
+import time
 from datetime import datetime
 from playwright.async_api import Page
 from loguru import logger
+
+MAX_CARDS = 300       # hard stop — beyond this browser degrades
+_DEGRADE_FACTOR = 3   # scroll took N× median of first 5 → stop early
+_DEGRADE_MIN_S = 10   # degrade only triggered if scroll > this many seconds
 
 
 SCROLL_SCRIPT = """
@@ -275,17 +280,42 @@ async def scroll_and_collect(
     page: Page,
     max_scrolls: int = 30,
     stable_rounds: int = 3,
+    max_cards: int = MAX_CARDS,
 ) -> list[dict]:
     seen_count = 0
     stable = 0
     last_height = 0
+    scroll_times: list[float] = []
 
     for i in range(max_scrolls):
+        t0 = time.perf_counter()
         new_height = await page.evaluate(SCROLL_SCRIPT)
         cards = await page.evaluate(EXTRACT_SCRIPT)
-        current_count = len(cards)
+        elapsed = time.perf_counter() - t0
+        scroll_times.append(elapsed)
 
-        logger.info(f"Scroll {i + 1}/{max_scrolls}: height={new_height}, cards={current_count}")
+        current_count = len(cards)
+        logger.info(
+            f"Scroll {i + 1}/{max_scrolls}: height={new_height}, "
+            f"cards={current_count}, t={elapsed:.1f}s"
+        )
+
+        if current_count >= max_cards:
+            logger.warning(
+                f"[scroll] MAX_CARDS={max_cards} reached at scroll {i + 1} — stopping"
+            )
+            break
+
+        # Degrade detector: if scroll time is 3× median of first 5 scrolls → browser is
+        # running out of memory, stop now rather than waiting for OOM kill.
+        if len(scroll_times) >= 6:
+            median_early = sorted(scroll_times[:5])[2]
+            if elapsed > median_early * _DEGRADE_FACTOR and elapsed > _DEGRADE_MIN_S:
+                logger.warning(
+                    f"[scroll] Degrade detected at scroll {i + 1}: "
+                    f"t={elapsed:.1f}s vs median={median_early:.1f}s — stopping early"
+                )
+                break
 
         if current_count == seen_count and new_height == last_height:
             stable += 1

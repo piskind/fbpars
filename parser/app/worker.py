@@ -131,7 +131,10 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
                 return stats
 
             await asyncio.sleep(5)
-            raw_cards = await scroll_and_collect(page, max_scrolls=80, stable_rounds=7)
+            raw_cards = await asyncio.wait_for(
+                scroll_and_collect(page, max_scrolls=80, stable_rounds=7),
+                timeout=600,  # 10 min hard ceiling — prevents hang when browser is OOM-killed
+            )
             stats["raw"] = len(raw_cards)
 
         # Phase 1: sequential DB upserts (browser already closed)
