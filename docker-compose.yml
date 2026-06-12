@@ -45,6 +45,8 @@ services:
     volumes:
       - ./parser:/app
     command: ["python", "-m", "app.main"]
+    mem_limit: 3g
+    memswap_limit: 3g
 
   api:
     build:

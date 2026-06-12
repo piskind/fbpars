@@ -18,54 +18,54 @@ def _build_ad_url(library_id: str) -> str:
     return f"https://www.facebook.com/ads/library/?id={library_id}"
 
 
-async def _check_ad_on_fb(library_id: str) -> bool | None:
+async def _check_ad_on_fb(context, library_id: str) -> bool | None:
     """
     Возвращает:
       True  — ad активен на FB
       False — ad точно умер (страница загрузилась но карточки нет, либо парсер видит Inactive в карточке)
       None  — не смогли проверить (сетевая ошибка, прокси, FB-блок) — статус не трогаем
+
+    Принимает уже открытый context — браузер переиспользуется для всего батча.
     """
     url = _build_ad_url(library_id)
+    page = await context.new_page()
     try:
-        async with browser_context() as context:
-            page = await context.new_page()
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-            except Exception as e:
-                logger.error(f"[refresh] {library_id}: network error {e}")
-                return None  # сеть — не трогаем
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        except Exception as e:
+            logger.error(f"[refresh] {library_id}: network error {e}")
+            return None
 
-            # даем странице время отрисоваться
-            await asyncio.sleep(2)
+        await asyncio.sleep(2)
 
-            # ищем именно карточку с нужным либ айди
-            card_text = None
-            try:
-                divs = await page.query_selector_all("div")
-                for div in divs:
-                    t = await div.inner_text()
-                    if f"Library ID: {library_id}" in t and 100 < len(t) < 5000:
-                        card_text = t
-                        break
-            except Exception as e:
-                logger.warning(f"[refresh] {library_id}: DOM scan error {e}")
-                return None  # не смогли просканировать то не трогаем
+        card_text = None
+        try:
+            divs = await page.query_selector_all("div")
+            for div in divs:
+                t = await div.inner_text()
+                if f"Library ID: {library_id}" in t and 100 < len(t) < 5000:
+                    card_text = t
+                    break
+        except Exception as e:
+            logger.warning(f"[refresh] {library_id}: DOM scan error {e}")
+            return None
 
-            if not card_text:
-                # страница загрузилась, но карточки с нашим айди нет то мертв
-                logger.info(f"[refresh] {library_id}: card not found → INACTIVE")
-                return False
+        if not card_text:
+            logger.info(f"[refresh] {library_id}: card not found → INACTIVE")
+            return False
 
-            try:
-                card = parse_card_text(card_text)
-                return bool(card.is_active)
-            except Exception as e:
-                logger.warning(f"[refresh] {library_id}: parse error {e}")
-                return None
+        try:
+            card = parse_card_text(card_text)
+            return bool(card.is_active)
+        except Exception as e:
+            logger.warning(f"[refresh] {library_id}: parse error {e}")
+            return None
 
     except Exception as e:
         logger.error(f"[refresh] {library_id}: error {e}")
         return None
+    finally:
+        await page.close()
 
 
 async def _get_active_ads(session, limit: int) -> list[Ad]:
@@ -93,39 +93,46 @@ async def refresh_batch(limit: int = BATCH_SIZE) -> dict:
     async with AsyncSessionLocal() as session:
         ads = await _get_active_ads(session, limit)
 
-    logger.info(f"[refresh] Starting batch of {len(ads)} ads")
+    logger.info(f"[refresh] Starting batch of {len(ads)} ads (one browser for all)")
 
-    for i, ad in enumerate(ads, 1):
-        library_id = ad.library_id
-        logger.info(f"[refresh] [{i}/{len(ads)}] checking {library_id}")
+    # One browser for the entire batch — was previously one browser per ad (50× launches).
+    async with browser_context() as context:
+        for i, ad in enumerate(ads, 1):
+            library_id = ad.library_id
+            logger.info(f"[refresh] [{i}/{len(ads)}] checking {library_id}")
 
-        is_active = await _check_ad_on_fb(library_id)
-        stats["checked"] += 1
+            try:
+                is_active = await _check_ad_on_fb(context, library_id)
+            except Exception as e:
+                logger.error(f"[refresh] {library_id}: unexpected error {e}")
+                is_active = None
+                stats["errors"] += 1
+            stats["checked"] += 1
 
-        async with AsyncSessionLocal() as session:
-            db_ad = await session.get(Ad, ad.id)
-            if not db_ad:
-                continue
+            async with AsyncSessionLocal() as session:
+                db_ad = await session.get(Ad, ad.id)
+                if not db_ad:
+                    continue
 
-            db_ad.last_refresh_at = now
+                db_ad.last_refresh_at = now
 
-            if is_active is None:
-                stats["unknown"] += 1
-            elif is_active:
-                db_ad.last_seen_at = now
-                db_ad.days_active = _compute_days_active(db_ad, now)
-                stats["still_active"] += 1
-            else:
-                db_ad.is_active = False
-                db_ad.days_active = _compute_days_active(db_ad, now)
-                stats["deactivated"] += 1
-                logger.info(f"[refresh] {library_id}: marked INACTIVE")
+                if is_active is None:
+                    stats["unknown"] += 1
+                elif is_active:
+                    db_ad.last_seen_at = now
+                    db_ad.days_active = _compute_days_active(db_ad, now)
+                    stats["still_active"] += 1
+                else:
+                    db_ad.is_active = False
+                    db_ad.days_active = _compute_days_active(db_ad, now)
+                    stats["deactivated"] += 1
+                    logger.info(f"[refresh] {library_id}: marked INACTIVE")
 
-            await session.commit()
+                await session.commit()
 
-        if i < len(ads) and i % 10 == 0:
-            logger.info("[refresh] Rotating IP")
-            await rotate_ip()
+            if i < len(ads) and i % 10 == 0:
+                logger.info("[refresh] Rotating IP")
+                await rotate_ip()
 
     logger.info(f"[refresh] Batch done: {stats}")
     return stats
