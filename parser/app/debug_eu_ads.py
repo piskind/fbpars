@@ -185,10 +185,44 @@ async def process_ad(context, ad_id: str) -> None:
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
 
-        # Check for anti-bot
-        html_initial = await page.content()
-        if "__rd_verify" in html_initial:
-            logger.warning(f"  __rd_verify challenge for {ad_id} — skipping")
+        # Anti-bot: __rd_verify challenge triggers location.reload() itself.
+        # Wait for that auto-reload; if it doesn't clear, force fresh goto. Up to 4 tries.
+        MAX_CHALLENGE_RETRIES = 4
+        html = await page.content()
+        challenge_ok = "__rd_verify" not in html
+
+        if not challenge_ok:
+            for attempt in range(1, MAX_CHALLENGE_RETRIES + 1):
+                wait_s = 6 * attempt
+                logger.warning(
+                    f"  __rd_verify (attempt {attempt}/{MAX_CHALLENGE_RETRIES}) "
+                    f"— waiting {wait_s}s for auto-reload"
+                )
+                await asyncio.sleep(wait_s)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=12_000)
+                except Exception:
+                    pass
+                html = await page.content()
+                if "__rd_verify" not in html:
+                    challenge_ok = True
+                    logger.info(f"  Challenge cleared after {attempt} wait(s)")
+                    break
+                # If still stuck, force a fresh navigation for the next attempt
+                if attempt < MAX_CHALLENGE_RETRIES:
+                    logger.warning(f"  Still challenged — reloading page")
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                        html = await page.content()
+                        if "__rd_verify" not in html:
+                            challenge_ok = True
+                            logger.info(f"  Challenge cleared after fresh goto (attempt {attempt})")
+                            break
+                    except Exception:
+                        pass
+
+        if not challenge_ok:
+            logger.warning(f"  __rd_verify persists after {MAX_CHALLENGE_RETRIES} attempts — skipping {ad_id}")
             return
 
         # Wait for ad content
