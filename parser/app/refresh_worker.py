@@ -18,54 +18,97 @@ def _build_ad_url(library_id: str) -> str:
     return f"https://www.facebook.com/ads/library/?id={library_id}"
 
 
-async def _check_ad_on_fb(library_id: str) -> bool | None:
+async def _load_card_text(library_id: str) -> bool | None | str:
     """
-    Возвращает:
-      True  — ad активен на FB
-      False — ad точно умер (страница загрузилась но карточки нет, либо парсер видит Inactive в карточке)
-      None  — не смогли проверить (сетевая ошибка, прокси, FB-блок) — статус не трогаем
-
-    Открывает свой browser_context на каждый ad — свежая сессия не триггерит антибот.
-    OOM-защита обеспечивается _BROWSER_SEMAPHORE внутри browser_context().
+    Opens a fresh browser context, loads the ?id= page, and returns:
+      str  — card innerText found
+      False — page loaded OK but card genuinely absent
+      None  — couldn't verify (challenge, network error, empty page)
     """
     url = _build_ad_url(library_id)
-    try:
-        async with browser_context() as context:
-            page = await context.new_page()
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-            except Exception as e:
-                logger.error(f"[refresh] {library_id}: network error {e}")
-                return None
+    async with browser_context() as context:
+        page = await context.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        except Exception as e:
+            logger.warning(f"[refresh] {library_id}: network error {e}")
+            return None
 
-            await asyncio.sleep(2)
+        try:
+            html = await page.content()
+        except Exception:
+            return None
 
-            card_text = None
-            try:
-                divs = await page.query_selector_all("div")
-                for div in divs:
-                    t = await div.inner_text()
-                    if f"Library ID: {library_id}" in t and 100 < len(t) < 5000:
-                        card_text = t
-                        break
-            except Exception as e:
-                logger.warning(f"[refresh] {library_id}: DOM scan error {e}")
-                return None
+        if "__rd_verify" in html:
+            logger.warning(f"[refresh] {library_id}: __rd_verify challenge → skip")
+            return None
 
-            if not card_text:
-                logger.info(f"[refresh] {library_id}: card not found → INACTIVE")
-                return False
+        await asyncio.sleep(2)
 
-            try:
-                card = parse_card_text(card_text)
-                return bool(card.is_active)
-            except Exception as e:
-                logger.warning(f"[refresh] {library_id}: parse error {e}")
-                return None
+        try:
+            divs = await page.query_selector_all("div")
+            for div in divs:
+                t = await div.inner_text()
+                if f"Library ID: {library_id}" in t and 100 < len(t) < 10000:
+                    return t
+        except Exception as e:
+            logger.warning(f"[refresh] {library_id}: DOM scan error {e}")
+            return None
 
-    except Exception as e:
-        logger.error(f"[refresh] {library_id}: error {e}")
+        # Page loaded (has HTML content) but no card found.
+        # Could be a stale proxy / disrupted connection — check body size.
+        body_len = len(html)
+        if body_len < 2000:
+            # Suspiciously empty — treat as inconclusive, not INACTIVE
+            logger.warning(f"[refresh] {library_id}: page too small ({body_len}b) → skip")
+            return None
+
+        return False
+
+
+async def _check_ad_on_fb(library_id: str) -> bool | None:
+    """
+    Returns:
+      True  — ad is active on FB
+      False — ad is genuinely gone (card absent on a properly-loaded page, confirmed by retry)
+      None  — couldn't verify (challenge, network, proxy disruption) — do not change status
+
+    Per-ad browser_context ensures fresh session; _BROWSER_SEMAPHORE prevents OOM.
+    """
+    result = await _load_card_text(library_id)
+
+    if result is None:
         return None
+
+    if result is not False:
+        # Got card text — parse active status
+        try:
+            card = parse_card_text(result)
+            return bool(card.is_active)
+        except Exception as e:
+            logger.warning(f"[refresh] {library_id}: parse error {e}")
+            return None
+
+    # Card not found on first attempt — retry once after a delay to rule out
+    # transient proxy disruption (e.g. discovery worker just rotated IP).
+    logger.warning(f"[refresh] {library_id}: card not found on first attempt, retrying in 15s")
+    await asyncio.sleep(15)
+
+    result2 = await _load_card_text(library_id)
+
+    if result2 is None:
+        return None
+
+    if result2 is not False:
+        try:
+            card = parse_card_text(result2)
+            return bool(card.is_active)
+        except Exception as e:
+            logger.warning(f"[refresh] {library_id}: parse error on retry {e}")
+            return None
+
+    logger.info(f"[refresh] {library_id}: card not found after retry → INACTIVE")
+    return False
 
 
 async def _get_active_ads(session, limit: int) -> list[Ad]:
