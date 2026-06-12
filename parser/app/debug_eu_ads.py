@@ -59,64 +59,109 @@ EXPAND_TEXTS = [
 ]
 
 
-async def try_expand(page) -> bool:
-    """Try to click any EU-transparency expand button. Returns True if clicked."""
-    for text in EXPAND_TEXTS:
+# JS markers used to locate the EU transparency container
+EU_MARKERS = [
+    "Transparency by location",
+    "EU transparency",
+    "Ad Details",
+    "Reach by location",
+    "About the advertiser",
+    "Advertiser and payer",
+    "Audience",
+    "Age",
+    "Gender",
+]
+
+# JS script: score every div by (size / markers²) — smallest container with most markers wins.
+# Skips navigation-sized blobs (>30k chars) and micro-elements (<100 chars).
+_MARKERS_JS = str(EU_MARKERS).replace("'", '"')
+EU_BLOCK_SCRIPT = f"""
+() => {{
+    const MARKERS = {_MARKERS_JS};
+    let best = null;
+    let bestScore = Infinity;
+
+    for (const el of document.querySelectorAll('div, section, main, article')) {{
+        const text = (el.innerText || '').trim();
+        if (text.length < 100 || text.length > 30000) continue;
+        const hits = MARKERS.filter(m => text.includes(m)).length;
+        if (hits === 0) continue;
+        const score = text.length / (hits * hits);
+        if (score < bestScore) {{
+            best = el;
+            bestScore = score;
+        }}
+    }}
+
+    if (!best) return null;
+    return {{
+        text: best.innerText,
+        html: best.innerHTML,
+        score: Math.round(bestScore),
+        len: best.innerText.length,
+    }};
+}}
+"""
+
+
+async def _click_text(page, candidates: list[str], label: str) -> bool:
+    """Click the first small element whose text matches any candidate string."""
+    for text in candidates:
         try:
             loc = page.get_by_text(text, exact=False)
-            count = await loc.count()
-            if count > 0:
-                logger.info(f"  Found expand button: {text!r} ({count} matches), clicking first")
-                await loc.first.click(timeout=5_000)
-                await asyncio.sleep(2)
-                return True
+            n = await loc.count()
+            if n == 0:
+                continue
+            # Prefer small elements (buttons/links) over large containers
+            for i in range(min(n, 4)):
+                el = loc.nth(i)
+                inner = (await el.inner_text(timeout=2_000)).strip()
+                if len(inner) < 120:
+                    logger.info(f"  [{label}] clicking {text!r} → {inner[:60]!r}")
+                    await el.click(timeout=5_000)
+                    await asyncio.sleep(2)
+                    return True
         except Exception:
             pass
-
-    # Fallback: click any <a> or <button> that looks like a details link
-    try:
-        details_link = page.locator('a[href*="ad_detail"], button:has-text("detail")')
-        if await details_link.count() > 0:
-            await details_link.first.click(timeout=5_000)
-            await asyncio.sleep(2)
-            return True
-    except Exception:
-        pass
-
     return False
+
+
+async def try_expand(page) -> bool:
+    """Step 1: click 'See ad details' or equivalent."""
+    return await _click_text(page, EXPAND_TEXTS, "step1")
+
+
+async def try_expand_transparency(page) -> bool:
+    """Step 2: within the opened panel, expand 'Transparency by location'."""
+    candidates = [
+        "Transparency by location",
+        "Transparency",
+        "Reach by location",
+        "EU transparency",
+        "Ad reach",
+        "Reach",
+    ]
+    return await _click_text(page, candidates, "step2")
 
 
 async def find_eu_block(page) -> tuple[str, str]:
     """
-    Try to find the EU transparency block.
-    Returns (innerText, outerHTML) of the best candidate element,
-    or (full_page_text, '') if nothing specific found.
+    Use JS scoring to find the smallest container that holds EU transparency content.
+    Falls back to full body text if nothing found.
     """
-    # Candidate selectors — FB often puts EU data in a dialog or a dedicated section
-    selectors = [
-        '[role="dialog"]',
-        '[aria-label*="detail" i]',
-        '[aria-label*="dettagl" i]',
-        '[aria-label*="detalle" i]',
-        '[data-testid*="ad_detail"]',
-    ]
-
-    for sel in selectors:
-        try:
-            el = page.locator(sel).first
-            if await el.count() > 0:
-                text = await el.inner_text(timeout=3_000)
-                html = await el.inner_html(timeout=3_000)
-                if len(text.strip()) > 50:
-                    logger.info(f"  Found EU block via selector: {sel!r}")
-                    return text, html
-        except Exception:
-            pass
-
-    # Last resort: full page text
     try:
-        text = await page.inner_text("body")
-        return text, ""
+        result = await page.evaluate(EU_BLOCK_SCRIPT)
+        if result and result.get("text"):
+            logger.info(
+                f"  EU block found via JS scoring: len={result['len']}, score={result['score']}"
+            )
+            return result["text"], result["html"]
+    except Exception as e:
+        logger.warning(f"  EU_BLOCK_SCRIPT failed: {e}")
+
+    # Fallback: full body
+    try:
+        return await page.inner_text("body"), ""
     except Exception:
         return "", ""
 
@@ -162,20 +207,30 @@ async def process_ad(context, ad_id: str) -> None:
         await page.screenshot(path=str(pre_path), full_page=True)
         logger.info(f"  Screenshot saved: {pre_path}")
 
-        # Try to expand EU transparency section
+        # Step 1: click "See ad details" or equivalent
         expanded = await try_expand(page)
         if expanded:
-            logger.info(f"  Expanded EU section")
+            logger.info("  Step 1: expanded Ad Details panel")
             await asyncio.sleep(2)
-            # Screenshot AFTER expanding
-            post_path = OUTPUT_DIR / f"debug_eu_{ad_id}.png"
-            await page.screenshot(path=str(post_path), full_page=True)
-            logger.info(f"  Post-expand screenshot: {post_path}")
+            await page.screenshot(
+                path=str(OUTPUT_DIR / f"debug_eu_{ad_id}_step1.png"), full_page=True
+            )
+            # Step 2: click "Transparency by location" inside the panel
+            expanded2 = await try_expand_transparency(page)
+            if expanded2:
+                logger.info("  Step 2: expanded Transparency by location")
+                await asyncio.sleep(2)
+            else:
+                logger.info("  Step 2: no Transparency section click needed (or not found)")
         else:
-            logger.info(f"  No expand button found — dumping page as-is")
-            pre_path.rename(OUTPUT_DIR / f"debug_eu_{ad_id}.png")
+            logger.info("  No expand button found — dumping page as-is")
 
-        # Extract EU block
+        await page.screenshot(
+            path=str(OUTPUT_DIR / f"debug_eu_{ad_id}.png"), full_page=True
+        )
+        logger.info(f"  Final screenshot: debug_eu_{ad_id}.png")
+
+        # Extract EU block (JS scoring — smallest container with most EU markers)
         eu_text, eu_html = await find_eu_block(page)
 
         # Full page text for keyword search
