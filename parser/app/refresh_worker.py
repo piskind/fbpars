@@ -17,6 +17,13 @@ BATCH_SIZE = 50
 # Works for both active (CTA button present) and inactive (URL may be in data attrs).
 _URL_SCRIPT = """
 () => {
+    const SKIP = [
+        'facebook.com', 'fb.com', 'fb.me', 'instagram.com', 'meta.com',
+        'metastatus.com', 'about.fb.com', 'messenger.com', 'whatsapp.com',
+        'oculus.com', 'workplace.com',
+    ];
+    const blocked = (url) => SKIP.some(d => url.includes(d));
+
     const decode = (href) => {
         try {
             if (href.includes('l.facebook.com') || href.includes('l.fb.me')) {
@@ -28,19 +35,19 @@ _URL_SCRIPT = """
     };
     for (const a of document.querySelectorAll('a[href]')) {
         const href = a.href || '';
-        if (!href || href.startsWith('about:') || href.includes('facebook.com/ads/library')) continue;
+        if (!href || href.startsWith('about:')) continue;
         const dec = decode(href);
-        if (dec && !dec.includes('facebook.com')) return dec;
-        if (!href.includes('facebook.com')) return href;
+        if (dec && !blocked(dec)) return dec;
+        if (!blocked(href)) return href;
     }
     for (const node of document.querySelectorAll('[data-lynx-uri]')) {
         const uri = node.getAttribute('data-lynx-uri') || '';
-        if (uri && !uri.includes('facebook.com')) return uri;
+        if (uri && !blocked(uri)) return uri;
     }
     for (const node of document.querySelectorAll('[data-store]')) {
         try {
             const s = JSON.parse(node.getAttribute('data-store') || '{}');
-            if (s.url && !s.url.includes('facebook.com')) return s.url;
+            if (s.url && !blocked(s.url)) return s.url;
         } catch(e) {}
     }
     return null;
