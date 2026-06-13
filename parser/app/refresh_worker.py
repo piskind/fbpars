@@ -41,22 +41,27 @@ async def _load_card_text(library_id: str) -> bool | None | str:
         await asyncio.sleep(2)
 
         try:
-            html = await page.content()
-        except Exception:
-            return None
-
-        try:
-            divs = await page.query_selector_all("div")
-            for div in divs:
-                t = await div.inner_text()
-                if f"Library ID: {library_id}" in t and 100 < len(t) < 10000:
-                    return t
+            result = await page.evaluate(f"""
+                () => {{
+                    const needle = 'Library ID: {library_id}';
+                    for (const el of document.querySelectorAll('div')) {{
+                        const t = el.innerText || '';
+                        if (t.includes(needle) && t.length > 100 && t.length < 10000) {{
+                            return {{ text: t, bodyLen: document.body.innerText.length }};
+                        }}
+                    }}
+                    return {{ text: null, bodyLen: document.body.innerText.length }};
+                }}
+            """)
         except Exception as e:
-            logger.warning(f"[refresh] {library_id}: DOM scan error {e}")
+            logger.warning(f"[refresh] {library_id}: evaluate error {e}")
             return None
 
-        if len(html) < 2000:
-            logger.warning(f"[refresh] {library_id}: page too small ({len(html)}b) → skip")
+        if result.get("text"):
+            return result["text"]
+
+        if result.get("bodyLen", 9999) < 500:
+            logger.warning(f"[refresh] {library_id}: page nearly empty → skip")
             return None
 
         return False
