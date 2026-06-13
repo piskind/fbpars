@@ -5,7 +5,7 @@ from loguru import logger
 
 from app.db import AsyncSessionLocal
 from app.models import Ad
-from app.browser import browser_context
+from app.browser import browser_context, goto_with_challenge_retry
 from app.parsers.library_card import parse_card_text
 from app.proxy import rotate_ip
 
@@ -21,29 +21,29 @@ def _build_ad_url(library_id: str) -> str:
 async def _load_card_text(library_id: str) -> bool | None | str:
     """
     Opens a fresh browser context, loads the ?id= page, and returns:
-      str  — card innerText found
+      str   — card innerText found
       False — page loaded OK but card genuinely absent
-      None  — couldn't verify (challenge, network error, empty page)
+      None  — couldn't verify (challenge exhausted, network error, empty page)
     """
     url = _build_ad_url(library_id)
     async with browser_context() as context:
         page = await context.new_page()
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            ok = await goto_with_challenge_retry(page, url, max_attempts=4, base_wait=6)
         except Exception as e:
             logger.warning(f"[refresh] {library_id}: network error {e}")
             return None
+
+        if not ok:
+            logger.warning(f"[refresh] {library_id}: challenge not cleared after retries → skip")
+            return None
+
+        await asyncio.sleep(2)
 
         try:
             html = await page.content()
         except Exception:
             return None
-
-        if "__rd_verify" in html:
-            logger.warning(f"[refresh] {library_id}: __rd_verify challenge → skip")
-            return None
-
-        await asyncio.sleep(2)
 
         try:
             divs = await page.query_selector_all("div")
@@ -55,12 +55,8 @@ async def _load_card_text(library_id: str) -> bool | None | str:
             logger.warning(f"[refresh] {library_id}: DOM scan error {e}")
             return None
 
-        # Page loaded (has HTML content) but no card found.
-        # Could be a stale proxy / disrupted connection — check body size.
-        body_len = len(html)
-        if body_len < 2000:
-            # Suspiciously empty — treat as inconclusive, not INACTIVE
-            logger.warning(f"[refresh] {library_id}: page too small ({body_len}b) → skip")
+        if len(html) < 2000:
+            logger.warning(f"[refresh] {library_id}: page too small ({len(html)}b) → skip")
             return None
 
         return False
@@ -171,7 +167,7 @@ async def refresh_batch(limit: int = BATCH_SIZE) -> dict:
 
             await session.commit()
 
-        if i < len(ads) and i % 10 == 0:
+        if i < len(ads) and i % 5 == 0:
             logger.info("[refresh] Rotating IP")
             await rotate_ip()
 

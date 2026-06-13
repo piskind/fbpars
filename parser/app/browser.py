@@ -55,6 +55,64 @@ async def browser_context():
                 await browser.close()
 
 
+async def goto_with_challenge_retry(
+    page,
+    url: str,
+    max_attempts: int = 4,
+    base_wait: int = 6,
+) -> bool:
+    """
+    Navigate to url, handling FB's __rd_verify anti-bot challenge.
+
+    Returns True if page loaded cleanly, False if challenge persisted after all attempts.
+
+    FB's __rd_verify injects JS that calls location.reload() automatically.
+    Strategy: wait for that auto-reload, re-check; if still stuck, force a fresh goto.
+    """
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    except Exception as e:
+        logger.warning(f"goto_with_challenge_retry: network error on initial goto: {e}")
+        return False
+
+    try:
+        html = await page.content()
+    except Exception:
+        return False
+
+    if "__rd_verify" not in html:
+        return True
+
+    for attempt in range(1, max_attempts + 1):
+        wait_s = base_wait * attempt
+        logger.warning(f"__rd_verify challenge (attempt {attempt}/{max_attempts}) — waiting {wait_s}s for auto-reload")
+        await asyncio.sleep(wait_s)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=12_000)
+        except Exception:
+            pass
+        try:
+            html = await page.content()
+        except Exception:
+            return False
+        if "__rd_verify" not in html:
+            logger.info(f"Challenge cleared after {attempt} wait(s)")
+            return True
+        if attempt < max_attempts:
+            logger.warning("Still challenged — forcing fresh goto")
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                html = await page.content()
+                if "__rd_verify" not in html:
+                    logger.info(f"Challenge cleared after fresh goto (attempt {attempt})")
+                    return True
+            except Exception:
+                pass
+
+    logger.warning(f"__rd_verify persisted after {max_attempts} attempts")
+    return False
+
+
 def build_library_url(country: str, keyword: str) -> str:
     from urllib.parse import quote
     return (
