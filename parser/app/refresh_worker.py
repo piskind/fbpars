@@ -40,19 +40,29 @@ async def _load_card_text(library_id: str) -> bool | None | str:
 
         await asyncio.sleep(2)
 
+        # FB SPA may do another navigation after challenge reload — wait for it to settle
         try:
-            result = await page.evaluate(f"""
-                () => {{
-                    const needle = 'Library ID: {library_id}';
-                    for (const el of document.querySelectorAll('div')) {{
-                        const t = el.innerText || '';
-                        if (t.includes(needle) && t.length > 100 && t.length < 10000) {{
-                            return {{ text: t, bodyLen: document.body.innerText.length }};
-                        }}
+            await page.wait_for_load_state("networkidle", timeout=10_000)
+        except Exception:
+            pass
+
+        _script = f"""
+            () => {{
+                const needle = 'Library ID: {library_id}';
+                for (const el of document.querySelectorAll('div')) {{
+                    const t = el.innerText || '';
+                    if (t.includes(needle) && t.length > 100 && t.length < 10000) {{
+                        return {{ text: t, bodyLen: document.body.innerText.length }};
                     }}
-                    return {{ text: null, bodyLen: document.body.innerText.length }};
                 }}
-            """)
+                return {{ text: null, bodyLen: document.body.innerText.length }};
+            }}
+        """
+        try:
+            result = await asyncio.wait_for(page.evaluate(_script), timeout=20)
+        except asyncio.TimeoutError:
+            logger.warning(f"[refresh] {library_id}: evaluate timeout → skip")
+            return None
         except Exception as e:
             logger.warning(f"[refresh] {library_id}: evaluate error {e}")
             return None
