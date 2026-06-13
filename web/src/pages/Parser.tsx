@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 
@@ -41,8 +42,11 @@ const STATUS_COLORS: Record<string, string> = {
   cancelled: 'bg-gray-100 text-gray-500',
 }
 
+type LaunchMode = 'global' | 'filtered'
+
 export default function ParserPage() {
   const qc = useQueryClient()
+  const [mode, setMode] = useState<LaunchMode>('global')
 
   const { data, isLoading } = useQuery({
     queryKey: ['parser-status'],
@@ -80,40 +84,108 @@ export default function ParserPage() {
       <h1 className="text-2xl font-bold mb-6">Парсер</h1>
 
       {/* Status card */}
-      <div className="bg-white rounded-xl shadow p-5 mb-6 flex items-center gap-6">
-        <div className="flex items-center gap-3">
-          <span
-            className={`w-3 h-3 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`}
-          />
-          <span className="font-medium text-lg">
-            {isRunning ? 'Запущен' : 'Остановлен'}
-          </span>
-        </div>
-
-        {data?.last_run && !isRunning && (
-          <div className="text-sm text-gray-500">
-            Последний запуск: {fmtDate(data.last_run.finished_at)} · {fmtDuration(data.last_run)}
+      <div className="bg-white rounded-xl shadow p-5 mb-6">
+        <div className="flex items-center gap-6 mb-5">
+          <div className="flex items-center gap-3">
+            <span className={`w-3 h-3 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`} />
+            <span className="font-medium text-lg">{isRunning ? 'Запущен' : 'Остановлен'}</span>
           </div>
-        )}
-
-        <div className="ml-auto flex gap-2">
+          {data?.last_run && !isRunning && (
+            <div className="text-sm text-gray-500">
+              Последний запуск: {fmtDate(data.last_run.finished_at)} · {fmtDuration(data.last_run)}
+            </div>
+          )}
           {isRunning && (
             <button
               onClick={() => cancel.mutate()}
               disabled={cancel.isPending}
-              className="px-5 py-2 bg-red-100 text-red-700 rounded-lg text-sm hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="ml-auto px-5 py-2 bg-red-100 text-red-700 rounded-lg text-sm hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {cancel.isPending ? 'Отмена...' : '✕ Отменить'}
             </button>
           )}
-          <button
-            onClick={() => start.mutate()}
-            disabled={isRunning || start.isPending}
-            className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isRunning ? '⏳ Работает...' : '▶ Запустить'}
-          </button>
         </div>
+
+        {/* Launch mode selector */}
+        {!isRunning && (
+          <div>
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => setMode('global')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  mode === 'global'
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                Глобальный
+              </button>
+              <button
+                onClick={() => setMode('filtered')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  mode === 'filtered'
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                С фильтрами
+              </button>
+            </div>
+
+            {mode === 'global' && (
+              <div className="flex items-center gap-4">
+                <p className="text-sm text-gray-500">Парсинг всех активных конфигов без фильтрации.</p>
+                <button
+                  onClick={() => start.mutate()}
+                  disabled={start.isPending}
+                  className="ml-auto px-5 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {start.isPending ? '...' : '▶ Запустить'}
+                </button>
+              </div>
+            )}
+
+            {mode === 'filtered' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Гео (страна)</label>
+                  <div className="relative">
+                    <input
+                      disabled
+                      placeholder="Например: MX, PE, AZ"
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 text-gray-400 cursor-not-allowed pr-28"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs bg-gray-200 text-gray-500 px-2 py-0.5 rounded font-medium">
+                      Недоступно
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Язык объявлений</label>
+                  <div className="relative">
+                    <input
+                      disabled
+                      placeholder="Например: es, en, ru"
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 text-gray-400 cursor-not-allowed pr-28"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs bg-gray-200 text-gray-500 px-2 py-0.5 rounded font-medium">
+                      Недоступно
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 pt-1">
+                  <p className="text-xs text-gray-400">Фильтрация по гео и языку будет доступна в следующей версии.</p>
+                  <button
+                    disabled
+                    className="ml-auto px-5 py-2 bg-gray-100 text-gray-400 rounded-lg text-sm cursor-not-allowed"
+                  >
+                    ▶ Запустить
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {start.isError && (
