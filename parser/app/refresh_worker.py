@@ -13,17 +13,52 @@ from app.proxy import rotate_ip
 REFRESH_INTERVAL_HOURS = 6
 BATCH_SIZE = 50
 
+# JS: find the external landing URL on the ?id= page.
+# Works for both active (CTA button present) and inactive (URL may be in data attrs).
+_URL_SCRIPT = """
+() => {
+    const decode = (href) => {
+        try {
+            if (href.includes('l.facebook.com') || href.includes('l.fb.me')) {
+                const dest = new URL(href).searchParams.get('u');
+                if (dest) return decodeURIComponent(dest);
+            }
+        } catch(e) {}
+        return null;
+    };
+    for (const a of document.querySelectorAll('a[href]')) {
+        const href = a.href || '';
+        if (!href || href.startsWith('about:') || href.includes('facebook.com/ads/library')) continue;
+        const dec = decode(href);
+        if (dec && !dec.includes('facebook.com')) return dec;
+        if (!href.includes('facebook.com')) return href;
+    }
+    for (const node of document.querySelectorAll('[data-lynx-uri]')) {
+        const uri = node.getAttribute('data-lynx-uri') || '';
+        if (uri && !uri.includes('facebook.com')) return uri;
+    }
+    for (const node of document.querySelectorAll('[data-store]')) {
+        try {
+            const s = JSON.parse(node.getAttribute('data-store') || '{}');
+            if (s.url && !s.url.includes('facebook.com')) return s.url;
+        } catch(e) {}
+    }
+    return null;
+}
+"""
+
 
 def _build_ad_url(library_id: str) -> str:
     return f"https://www.facebook.com/ads/library/?id={library_id}"
 
 
-async def _load_card_text(library_id: str) -> bool | None | str:
+async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | None]:
     """
-    Opens a fresh browser context, loads the ?id= page, and returns:
-      str   — card innerText found
-      False — page loaded OK but card genuinely absent
-      None  — couldn't verify (challenge exhausted, network error, empty page)
+    Opens a fresh browser context, loads the ?id= page.
+    Returns (card_result, found_url) where:
+      card_result: str = card innerText | False = page OK but no card | None = couldn't verify
+      found_url:   str = external landing URL found on page | None = not found
+    One visit does both: status check AND link enrichment.
     """
     url = _build_ad_url(library_id)
     async with browser_context() as context:
@@ -32,21 +67,20 @@ async def _load_card_text(library_id: str) -> bool | None | str:
             ok = await goto_with_challenge_retry(page, url, max_attempts=4, base_wait=6)
         except Exception as e:
             logger.warning(f"[refresh] {library_id}: network error {e}")
-            return None
+            return None, None
 
         if not ok:
             logger.warning(f"[refresh] {library_id}: challenge not cleared after retries → skip")
-            return None
+            return None, None
 
         await asyncio.sleep(2)
 
-        # FB SPA may do another navigation after challenge reload — wait for it to settle
         try:
             await page.wait_for_load_state("networkidle", timeout=10_000)
         except Exception:
             pass
 
-        _script = f"""
+        _card_script = f"""
             () => {{
                 const needle = 'Library ID: {library_id}';
                 for (const el of document.querySelectorAll('div')) {{
@@ -59,67 +93,69 @@ async def _load_card_text(library_id: str) -> bool | None | str:
             }}
         """
         try:
-            result = await asyncio.wait_for(page.evaluate(_script), timeout=20)
+            card_result = await asyncio.wait_for(page.evaluate(_card_script), timeout=20)
         except asyncio.TimeoutError:
             logger.warning(f"[refresh] {library_id}: evaluate timeout → skip")
-            return None
+            return None, None
         except Exception as e:
             logger.warning(f"[refresh] {library_id}: evaluate error {e}")
-            return None
+            return None, None
 
-        if result.get("text"):
-            return result["text"]
-
-        if result.get("bodyLen", 9999) < 500:
-            logger.warning(f"[refresh] {library_id}: page nearly empty → skip")
-            return None
-
-        return False
-
-
-async def _check_ad_on_fb(library_id: str) -> bool | None:
-    """
-    Returns:
-      True  — ad is active on FB
-      False — ad is genuinely gone (card absent on a properly-loaded page, confirmed by retry)
-      None  — couldn't verify (challenge, network, proxy disruption) — do not change status
-
-    Per-ad browser_context ensures fresh session; _BROWSER_SEMAPHORE prevents OOM.
-    """
-    result = await _load_card_text(library_id)
-
-    if result is None:
-        return None
-
-    if result is not False:
-        # Got card text — parse active status
+        # Extract landing URL in the same page visit
+        found_url: str | None = None
         try:
-            card = parse_card_text(result)
-            return bool(card.is_active)
+            found_url = await asyncio.wait_for(page.evaluate(_URL_SCRIPT), timeout=10)
+        except Exception:
+            pass
+
+        if card_result.get("text"):
+            return card_result["text"], found_url
+
+        if card_result.get("bodyLen", 9999) < 500:
+            logger.warning(f"[refresh] {library_id}: page nearly empty → skip")
+            return None, None
+
+        return False, found_url
+
+
+async def _check_ad_on_fb(library_id: str) -> tuple[bool | None, str | None]:
+    """
+    Returns (is_active, found_url):
+      is_active: True = active | False = genuinely gone | None = couldn't verify
+      found_url: external landing URL extracted from the page, or None
+    """
+    card_text, found_url = await _load_card_text(library_id)
+
+    if card_text is None:
+        return None, None
+
+    if card_text is not False:
+        try:
+            card = parse_card_text(card_text)
+            return bool(card.is_active), found_url
         except Exception as e:
             logger.warning(f"[refresh] {library_id}: parse error {e}")
-            return None
+            return None, found_url
 
-    # Card not found on first attempt — retry once after a delay to rule out
-    # transient proxy disruption (e.g. discovery worker just rotated IP).
+    # Card not found on first attempt — retry once to rule out transient proxy disruption
     logger.warning(f"[refresh] {library_id}: card not found on first attempt, retrying in 15s")
     await asyncio.sleep(15)
 
-    result2 = await _load_card_text(library_id)
+    card_text2, found_url2 = await _load_card_text(library_id)
 
-    if result2 is None:
-        return None
+    if card_text2 is None:
+        return None, None
 
-    if result2 is not False:
+    if card_text2 is not False:
         try:
-            card = parse_card_text(result2)
-            return bool(card.is_active)
+            card = parse_card_text(card_text2)
+            return bool(card.is_active), found_url2 or found_url
         except Exception as e:
             logger.warning(f"[refresh] {library_id}: parse error on retry {e}")
-            return None
+            return None, found_url2 or found_url
 
     logger.info(f"[refresh] {library_id}: card not found after retry → INACTIVE")
-    return False
+    return False, found_url2 or found_url
 
 
 async def _get_active_ads(session, limit: int) -> list[Ad]:
@@ -142,7 +178,7 @@ def _compute_days_active(ad: Ad, now: datetime) -> int:
 
 async def refresh_batch(limit: int = BATCH_SIZE) -> dict:
     now = datetime.now(timezone.utc)
-    stats = {"checked": 0, "deactivated": 0, "still_active": 0, "unknown": 0, "errors": 0}
+    stats = {"checked": 0, "deactivated": 0, "still_active": 0, "unknown": 0, "errors": 0, "url_enriched": 0}
 
     async with AsyncSessionLocal() as session:
         ads = await _get_active_ads(session, limit)
@@ -154,10 +190,10 @@ async def refresh_batch(limit: int = BATCH_SIZE) -> dict:
         logger.info(f"[refresh] [{i}/{len(ads)}] checking {library_id}")
 
         try:
-            is_active = await _check_ad_on_fb(library_id)
+            is_active, found_url = await _check_ad_on_fb(library_id)
         except Exception as e:
             logger.error(f"[refresh] {library_id}: unexpected error {e}")
-            is_active = None
+            is_active, found_url = None, None
             stats["errors"] += 1
         stats["checked"] += 1
 
@@ -179,6 +215,12 @@ async def refresh_batch(limit: int = BATCH_SIZE) -> dict:
                 db_ad.days_active = _compute_days_active(db_ad, now)
                 stats["deactivated"] += 1
                 logger.info(f"[refresh] {library_id}: marked INACTIVE")
+
+            # Enrich link_url if missing and we found one on the page
+            if found_url and not db_ad.link_url:
+                db_ad.link_url = found_url
+                stats["url_enriched"] += 1
+                logger.info(f"[refresh] {library_id}: link_url enriched → {found_url}")
 
             await session.commit()
 
