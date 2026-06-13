@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, Browser, BrowserContext
 from app.config import settings
 from loguru import logger
 
@@ -113,13 +113,16 @@ async def goto_with_challenge_retry(
     return False
 
 
-def build_library_url(country: str, keyword: str) -> str:
+def build_library_url(country: str, keyword: str, languages: list[str] | None = None) -> str:
     from urllib.parse import quote
-    return (
+    url = (
         "https://www.facebook.com/ads/library/"
         f"?active_status=all&ad_type=all&country={country}"
         f"&q={quote(keyword)}&search_type=keyword_unordered&media_type=all"
     )
+    for i, lang in enumerate(languages or []):
+        url += f"&content_languages%5B{i}%5D={lang}"
+    return url
 
 
 def build_library_url_country_only(

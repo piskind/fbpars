@@ -48,6 +48,7 @@ class ParsingConfig(Base):
     vertical: Mapped[str] = mapped_column(String(32), default="nutra", index=True)
     partner: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    languages: Mapped[list | None] = mapped_column(ARRAY(String), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -102,8 +102,9 @@ async def _upload_card_media(
 
 
 async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict:
-    url = build_library_url(config.country, config.keyword)
-    logger.info(f"[#{config.id}] {config.keyword}/{config.country} → {url}")
+    url = build_library_url(config.country, config.keyword, config.languages)
+    lang_tag = f" lang={config.languages}" if config.languages else ""
+    logger.info(f"[#{config.id}] {config.keyword}/{config.country}{lang_tag} → {url}")
 
     stats = {
         "raw": 0,
