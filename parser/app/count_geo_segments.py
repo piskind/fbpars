@@ -28,13 +28,16 @@ INTER_REQUEST_DELAY = 2
 
 # ─── URL ──────────────────────────────────────────────────────────────────────
 
-def build_date_url(country: str, d_min: str, d_max: str) -> str:
-    return (
+def build_date_url(country: str, d_min: str, d_max: str, languages: list[str] | None = None) -> str:
+    url = (
         "https://www.facebook.com/ads/library/"
         f"?active_status=all&ad_type=all&country={country}"
         f"&q=%25&search_type=keyword_unordered&media_type=all"
         f"&start_date%5Bmin%5D={d_min}&start_date%5Bmax%5D={d_max}"
     )
+    for i, lang in enumerate(languages or []):
+        url += f"&content_languages%5B{i}%5D={lang}"
+    return url
 
 
 # ─── Label parsing ────────────────────────────────────────────────────────────
@@ -141,12 +144,12 @@ async def _fetch_once(context, url: str) -> tuple[str, bool]:
         await page.close()
 
 
-async def fetch(context, country: str, d_min: str, d_max: str) -> tuple[str, bool]:
+async def fetch(context, country: str, d_min: str, d_max: str, languages: list[str] | None = None) -> tuple[str, bool]:
     """
     Returns (label, ok).
     ok=False → all retries exhausted; caller should mark segment FAILED.
     """
-    url = build_date_url(country, d_min, d_max)
+    url = build_date_url(country, d_min, d_max, languages)
     for attempt in range(1, MAX_RETRIES + 1):
         if attempt > 1:
             wait = RETRY_DELAY * attempt
@@ -176,9 +179,9 @@ class Seg:
     subs: list = field(default_factory=list)
 
 
-async def measure(context, country: str, d_min: str, d_max: str, depth: int = 0) -> Seg:
+async def measure(context, country: str, d_min: str, d_max: str, depth: int = 0, languages: list[str] | None = None) -> Seg:
     indent = "  " * depth
-    label, ok = await fetch(context, country, d_min, d_max)
+    label, ok = await fetch(context, country, d_min, d_max, languages)
 
     if not ok:
         logger.error(f"{indent}❌ FAILED  {d_min} → {d_max}")
@@ -200,7 +203,7 @@ async def measure(context, country: str, d_min: str, d_max: str, depth: int = 0)
     logger.info(f"{indent}splitting into {len(sub_periods)} sub-periods (depth {depth+1})")
     subs: list[Seg] = []
     for sd_min, sd_max in sub_periods:
-        subs.append(await measure(context, country, sd_min, sd_max, depth + 1))
+        subs.append(await measure(context, country, sd_min, sd_max, depth + 1, languages))
 
     total = sum(s.count for s in subs)
     return Seg(
@@ -215,15 +218,16 @@ async def measure(context, country: str, d_min: str, d_max: str, depth: int = 0)
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-async def run(country: str, from_ym: str, to_ym: str) -> None:
+async def run(country: str, from_ym: str, to_ym: str, languages: list[str] | None = None) -> None:
     segments = months_range(from_ym, to_ym)
-    logger.info(f"[seg] country={country}  {from_ym} → {to_ym}  ({len(segments)} months)")
+    lang_tag = f"  lang={','.join(languages)}" if languages else ""
+    logger.info(f"[seg] country={country}  {from_ym} → {to_ym}  ({len(segments)} months){lang_tag}")
 
     results: list[Seg] = []
     async with browser_context() as context:
         for d_min, d_max in segments:
             try:
-                seg = await measure(context, country, d_min, d_max)
+                seg = await measure(context, country, d_min, d_max, languages=languages)
             except Exception as e:
                 logger.error(f"Unhandled exception for {d_min}→{d_max}: {e}")
                 seg = Seg(d_min=d_min, d_max=d_max, count=0, label="CRASHED", failed=True)
@@ -269,5 +273,8 @@ if __name__ == "__main__":
                     help=f"start month (default: {_default_from})")
     ap.add_argument("--to", dest="to_ym", default=_default_to, metavar="YYYY-MM",
                     help=f"end month (default: {_default_to})")
+    ap.add_argument("--lang", dest="lang", default=None,
+                    help="Comma-separated language codes, e.g. es  or  es,en")
     args = ap.parse_args()
-    asyncio.run(run(args.country, args.from_ym, args.to_ym))
+    languages = [l.strip() for l in args.lang.split(",")] if args.lang else None
+    asyncio.run(run(args.country, args.from_ym, args.to_ym, languages))
