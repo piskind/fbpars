@@ -308,25 +308,127 @@ async def probe_ad_page(page, ad_id: str):
     logger.info("Copy with: docker cp spy_parser:/tmp/probe_hd_player.png ~/Desktop/")
 
 
-async def main():
-    keyword = sys.argv[1] if len(sys.argv) > 1 else "oxys"
-    country = sys.argv[2] if len(sys.argv) > 2 else "PE"
-    ad_id = sys.argv[3] if len(sys.argv) > 3 else None
+async def probe_feed_deep(page, keyword: str, country: str):
+    """Go to feed, scroll to find video ads, probe quality controls."""
+    url = build_library_url(country, keyword)
+    logger.info(f"Opening feed: {url}")
+    ok = await goto_with_challenge_retry(page, url)
+    if not ok:
+        logger.error("Failed to load feed")
+        return
 
-    if not ad_id:
-        ad_id = await get_video_ad_id()
-        if ad_id:
-            logger.info(f"Using video ad from DB: {ad_id}")
-        else:
-            logger.warning("No video ad found in DB, will use feed only")
+    try:
+        await page.wait_for_selector('div:has-text("Library ID")', timeout=30_000)
+    except Exception:
+        pass
+    await asyncio.sleep(4)
+
+    # Scroll until we find video elements
+    found_vids = 0
+    for scroll_i in range(10):
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(2.5)
+        vids = await page.evaluate(VIDEO_STATE_JS)
+        found_vids = len(vids)
+        logger.info(f"  scroll {scroll_i+1}: {found_vids} video(s) in DOM")
+        if found_vids > 0:
+            break
+
+    if found_vids == 0:
+        logger.warning("No video elements found after scrolling")
+        return
+
+    logger.info("\n" + "=" * 60)
+    logger.info("VIDEOS in feed (before interaction)")
+    logger.info("=" * 60)
+    vids = await page.evaluate(VIDEO_STATE_JS)
+    for i, v in enumerate(vids):
+        logger.info(f"  [vid {i}] rs={v['rs']} {v['w']}x{v['h']}")
+        logger.info(f"    src={v['src'][:100] or '(empty)'}")
+        logger.info(f"    poster={v['poster'][:80] or '(empty)'}")
+
+    # Scroll first video into view and click its play area
+    logger.info("\nScrolling first video into view and clicking play...")
+    await page.evaluate("""
+    () => {
+        const v = document.querySelector('video');
+        if (v) v.scrollIntoView({behavior: 'instant', block: 'center'});
+    }
+    """)
+    await asyncio.sleep(2)
+
+    # Try clicking on the video element to trigger player UI
+    try:
+        vid_el = page.locator('video').first
+        await vid_el.click()
+        logger.info("  Clicked video element")
+    except Exception as e:
+        logger.warning(f"  Click on video failed: {e}")
+
+    await asyncio.sleep(3)
+
+    # Check quality controls
+    logger.info("\n" + "=" * 60)
+    logger.info("QUALITY CONTROLS after click")
+    logger.info("=" * 60)
+    controls = await page.evaluate(QUALITY_CONTROLS_JS)
+    if not controls:
+        logger.warning("  No quality controls found")
+    for c in controls:
+        logger.info(f"  sel={c['sel']}  aria={c['aria']!r}  text={c['text']!r}  cls={c['cls'][:50]}")
+
+    # Also scan for any HD/quality text anywhere on page
+    logger.info("\n" + "=" * 60)
+    logger.info("QUALITY MENU ITEMS anywhere on page")
+    logger.info("=" * 60)
+    menu = await page.evaluate(QUALITY_MENU_JS)
+    if not menu:
+        logger.warning("  No quality menu items found")
+    for m in menu:
+        logger.info(f"  tag={m['tag']}  text={m['text']!r}  aria={m['aria']!r}  role={m['role']!r}")
+
+    # Trigger play() and wait
+    n = await page.evaluate("""
+    async () => {
+        const vids = document.querySelectorAll('video');
+        for (const v of vids) { try { await v.play(); } catch(e) {} }
+        return vids.length;
+    }
+    """)
+    logger.info(f"\nTriggered play() on {n} video(s), waiting 4s...")
+    await asyncio.sleep(4)
+
+    vids_after = await page.evaluate(VIDEO_STATE_JS)
+    logger.info("\nVIDEOS after play():")
+    for i, v in enumerate(vids_after):
+        logger.info(f"  [vid {i}] rs={v['rs']} {v['w']}x{v['h']}")
+        logger.info(f"    src={v['src'][:100] or '(empty)'}")
+        logger.info(f"    cur={v['cur'][:100] or '(empty)'}")
+
+    # Check quality controls again after play
+    controls2 = await page.evaluate(QUALITY_CONTROLS_JS)
+    if controls2:
+        logger.info("\nQuality controls after play:")
+        for c in controls2:
+            logger.info(f"  sel={c['sel']}  aria={c['aria']!r}  text={c['text']!r}")
+
+    await page.screenshot(path="/tmp/probe_hd_player.png", full_page=False)
+    logger.info("\nScreenshot: docker cp spy_parser:/tmp/probe_hd_player.png ~/Desktop/")
+
+
+async def main():
+    keyword = sys.argv[1] if len(sys.argv) > 1 else "casino"
+    country = sys.argv[2] if len(sys.argv) > 2 else "MX"
+    mode = sys.argv[3] if len(sys.argv) > 3 else "feed"  # "feed" or an ad library_id
 
     async with browser_context() as ctx:
         page = await ctx.new_page()
 
-        if ad_id:
-            await probe_ad_page(page, ad_id)
+        if mode == "feed":
+            await probe_feed_deep(page, keyword, country)
         else:
-            await probe_feed(page, keyword, country)
+            # mode is a specific library_id
+            await probe_ad_page(page, mode)
 
     logger.info("\nDone.")
 
