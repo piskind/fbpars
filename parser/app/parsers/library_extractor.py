@@ -101,10 +101,19 @@ EXTRACT_SCRIPT = """
                 alt: i.alt || ''
             }));
 
-        const vids = Array.from(el.querySelectorAll('video'))
+        // Video player lives in a sibling branch, not inside the text container.
+        // Walk up parents until we'd cross into a multi-card ancestor.
+        let vidRoot = el;
+        for (let i = 0; i < 5; i++) {
+            if (!vidRoot.parentElement) break;
+            const ptxt = vidRoot.parentElement.innerText || '';
+            if ((ptxt.match(/Library ID:/g) || []).length > 1) break;
+            vidRoot = vidRoot.parentElement;
+        }
+        const vids = Array.from(vidRoot.querySelectorAll('video'))
             .map(v => ({
-                src: v.src || v.currentSrc || v.querySelector('source')?.src || '',
-                poster: v.poster
+                src: v.src || v.currentSrc || '',
+                poster: v.poster || ''
             }))
             .filter(v => v.src || v.poster);
 
