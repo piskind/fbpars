@@ -25,6 +25,14 @@ EXTRACT_SCRIPT = """
     const results = [];
     const all = document.querySelectorAll('div');
 
+    const hdImgSrc = (src) => {
+        try {
+            const u = new URL(src);
+            u.searchParams.delete('stp');
+            return u.toString();
+        } catch(e) { return src; }
+    };
+
     const decodeFbRedirect = (href) => {
         try {
             const url = new URL(href);
@@ -78,12 +86,6 @@ EXTRACT_SCRIPT = """
         seen.add(id);
 
         const imgs = Array.from(el.querySelectorAll('img'))
-            .map(i => ({
-                src: i.src,
-                w: i.naturalWidth || 0,
-                h: i.naturalHeight || 0,
-                alt: i.alt || ''
-            }))
             .filter(i => {
                 if (!i.src || !i.src.startsWith('http')) return false;
                 if (i.src.includes('s60x60')) return false;
@@ -91,7 +93,13 @@ EXTRACT_SCRIPT = """
                 if (i.src.includes('emoji.php')) return false;
                 if (i.src.includes('rsrc.php')) return false;
                 return true;
-            });
+            })
+            .map(i => ({
+                src: hdImgSrc(i.src),
+                w: i.naturalWidth || 0,
+                h: i.naturalHeight || 0,
+                alt: i.alt || ''
+            }));
 
         const vids = Array.from(el.querySelectorAll('video'))
             .map(v => ({
