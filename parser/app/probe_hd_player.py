@@ -123,8 +123,10 @@ async def get_video_ad_id() -> str | None:
     """Get a library_id of a video ad from DB."""
     async with AsyncSessionLocal() as session:
         row = (await session.execute(text(
-            "SELECT library_id FROM creatives WHERE media_type='VIDEO' "
-            "AND s3_url IS NOT NULL ORDER BY id DESC LIMIT 1"
+            "SELECT a.library_id FROM creatives c "
+            "JOIN ads a ON a.id = c.ad_id "
+            "WHERE c.media_type='VIDEO' AND c.s3_url IS NOT NULL "
+            "ORDER BY c.id DESC LIMIT 1"
         ))).fetchone()
     return row[0] if row else None
 
