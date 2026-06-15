@@ -66,6 +66,33 @@ EXTRACT_SCRIPT = """
         return Array.from(found);
     };
 
+    // Pre-pass: walk UP from each <video> to find its card (single Library-ID ancestor).
+    // FB renders the video player in a sibling branch outside the text container,
+    // so top-down querySelectorAll('video') from the text div finds nothing.
+    const videoMap = new Map();
+    for (const vid of document.querySelectorAll('video')) {
+        if (!vid.src && !vid.currentSrc && !vid.poster) continue;
+        let node = vid;
+        for (let d = 0; d < 30; d++) {
+            if (!node.parentElement) break;
+            node = node.parentElement;
+            const t = node.innerText || '';
+            const cnt = (t.match(/Library ID:/g) || []).length;
+            if (cnt === 0) continue;
+            if (cnt === 1) {
+                const m = t.slice(t.indexOf('Library ID:') + 'Library ID:'.length).trim().match(/^(\\d+)/);
+                if (m) {
+                    if (!videoMap.has(m[1])) videoMap.set(m[1], []);
+                    videoMap.get(m[1]).push({
+                        src: vid.src || vid.currentSrc || '',
+                        poster: vid.poster || ''
+                    });
+                }
+            }
+            break; // cnt >= 1: stop regardless (going higher only adds more IDs)
+        }
+    }
+
     for (const el of all) {
         const txt = el.innerText || '';
         if (!txt.includes('Library ID:')) continue;
@@ -101,21 +128,7 @@ EXTRACT_SCRIPT = """
                 alt: i.alt || ''
             }));
 
-        // Video player lives in a sibling branch, not inside the text container.
-        // Walk up parents until we'd cross into a multi-card ancestor.
-        let vidRoot = el;
-        for (let i = 0; i < 5; i++) {
-            if (!vidRoot.parentElement) break;
-            const ptxt = vidRoot.parentElement.innerText || '';
-            if ((ptxt.match(/Library ID:/g) || []).length > 1) break;
-            vidRoot = vidRoot.parentElement;
-        }
-        const vids = Array.from(vidRoot.querySelectorAll('video'))
-            .map(v => ({
-                src: v.src || v.currentSrc || '',
-                poster: v.poster || ''
-            }))
-            .filter(v => v.src || v.poster);
+        const vids = (videoMap.get(id) || []).filter(v => v.src || v.poster);
 
         const anchors = Array.from(el.querySelectorAll('a[href]'));
         let externalUrl = null;
