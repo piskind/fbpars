@@ -33,7 +33,11 @@ _VIDEO_TIMEOUT   = 300                 # seconds — large files over mobile pro
 
 async def _download(url: str, timeout: int = 60, max_bytes: int | None = None) -> bytes | None:
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            proxy=settings.proxy_http_gateway,
+            timeout=timeout,
+            follow_redirects=True,
+        ) as client:
             async with client.stream("GET", url) as resp:
                 resp.raise_for_status()
                 if max_bytes:
