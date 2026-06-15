@@ -27,12 +27,31 @@ def _s3_key(library_id: str, ext: str, idx: int, kind: str) -> str:
     return f"m/{library_id[-2:]}/{library_id}/{kind}_{idx}.{ext}"
 
 
-async def _download(url: str) -> bytes | None:
+_VIDEO_MAX_BYTES = 150 * 1024 * 1024  # 150 MB hard limit per video
+_VIDEO_TIMEOUT   = 300                 # seconds — large files over mobile proxy
+
+
+async def _download(url: str, timeout: int = 60, max_bytes: int | None = None) -> bytes | None:
     try:
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.content
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                if max_bytes:
+                    cl = resp.headers.get("content-length")
+                    if cl and int(cl) > max_bytes:
+                        mb = int(cl) // 1_048_576
+                        logger.warning(f"Skip {url[:60]}: {mb} MB > limit {max_bytes // 1_048_576} MB")
+                        return None
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes(1024 * 256):
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if max_bytes and total > max_bytes:
+                        mb = total // 1_048_576
+                        logger.warning(f"Skip {url[:60]}: exceeded {mb} MB during download")
+                        return None
+                return b"".join(chunks)
     except Exception as e:
         logger.warning(f"Download failed {url[:80]}: {e}")
         return None
@@ -115,7 +134,7 @@ class MediaUploader:
         }
 
     async def upload_video(self, library_id: str, url: str, idx: int) -> dict | None:
-        data = await _download(url)
+        data = await _download(url, timeout=_VIDEO_TIMEOUT, max_bytes=_VIDEO_MAX_BYTES)
         if not data:
             return None
 
