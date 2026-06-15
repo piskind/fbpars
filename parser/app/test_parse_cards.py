@@ -1,20 +1,27 @@
 import asyncio
+import sys
 from loguru import logger
-from app.browser import browser_context, build_library_url
+from app.browser import browser_context, build_library_url, goto_with_challenge_retry
 from app.parsers.library_card import parse_card_text
 from app.parsers.library_extractor import scroll_and_collect
 
 
 async def main():
-    keyword = "oxys"
-    country = "PE"
+    keyword = sys.argv[1] if len(sys.argv) > 1 else "oxys"
+    country = sys.argv[2] if len(sys.argv) > 2 else "PE"
     url = build_library_url(country, keyword)
     logger.info(f"Opening: {url}")
 
     async with browser_context() as context:
         page = await context.new_page()
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        await page.wait_for_selector('div:has-text("Library ID")', timeout=30_000)
+        ok = await goto_with_challenge_retry(page, url)
+        if not ok:
+            logger.error("Failed to load page")
+            return
+        try:
+            await page.wait_for_selector('div:has-text("Library ID")', timeout=30_000)
+        except Exception:
+            logger.warning("Timeout waiting for Library ID — trying anyway")
         await asyncio.sleep(5)
 
         raw_cards = await scroll_and_collect(page, max_scrolls=30)
