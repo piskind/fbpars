@@ -28,7 +28,12 @@ EXTRACT_SCRIPT = """
     const hdImgSrc = (src) => {
         try {
             const u = new URL(src);
-            u.searchParams.delete('stp');
+            const stp = u.searchParams.get('stp');
+            if (stp) {
+                // Upgrade size within stp; keep the parameter so FB CDN auth still works.
+                // Removing stp entirely causes 403 (no-stp URLs require session cookies).
+                u.searchParams.set('stp', stp.replace(/s\d+x\d+/, 's1080x1080'));
+            }
             return u.toString();
         } catch(e) { return src; }
     };
