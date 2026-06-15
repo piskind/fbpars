@@ -152,45 +152,83 @@ async def main():
             else:
                 logger.info("  srcset: (empty)")
 
-        # ── VIDEOS BEFORE PLAY ────────────────────────────────────────────────
+        # ── SCROLL to load more cards ─────────────────────────────────────────
+        logger.info("\nScrolling to load more cards (3 scrolls) …")
+        for _ in range(3):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(3)
+
+        # ── GLOBAL VIDEO SCAN (all <video> on page) ───────────────────────────
         logger.info("")
         logger.info("=" * 60)
-        logger.info("VIDEOS — BEFORE play()")
+        logger.info("GLOBAL <video> scan — all videos on page after scroll")
         logger.info("=" * 60)
-        vids_before = await page.evaluate(PROBE_VIDEOS_BEFORE)
-        if not vids_before:
-            logger.warning("No videos found in ad cards")
-        for i, v in enumerate(vids_before):
-            logger.info(f"\n[vid {i}] readyState={v['readyState']}")
-            logger.info(f"  src       : {v['src'][:100] or '(empty)'}")
-            logger.info(f"  currentSrc: {v['currentSrc'][:100] or '(empty)'}")
-            logger.info(f"  poster    : {v['poster'][:80] or '(empty)'}")
+        global_vids = await page.evaluate("""() => {
+            const vids = Array.from(document.querySelectorAll('video'));
+            return {
+                total: vids.length,
+                items: vids.slice(0, 6).map(v => ({
+                    src: v.src || '',
+                    cur: v.currentSrc || '',
+                    poster: v.poster || '',
+                    rs: v.readyState,
+                    sources: Array.from(v.querySelectorAll('source')).map(s => ({
+                        src: s.getAttribute('src') || '',
+                        type: s.type || '',
+                        label: s.getAttribute('label') || '',
+                        res: s.getAttribute('res') || ''
+                    }))
+                }))
+            };
+        }""")
+        logger.info(f"Total <video> elements on page: {global_vids['total']}")
+        for i, v in enumerate(global_vids['items']):
+            logger.info(f"\n[vid {i}] readyState={v['rs']}")
+            logger.info(f"  src   : {v['src'][:100] or '(empty)'}")
+            logger.info(f"  cur   : {v['cur'][:100] or '(empty)'}")
+            logger.info(f"  poster: {v['poster'][:80] or '(empty)'}")
             if v['sources']:
                 logger.info("  <source> elements:")
                 for s in v['sources']:
-                    logger.info(f"    label={s['label']!r:6} type={s['type']!r:20} res={s['res']!r:6} src={s['src'][:80]}")
+                    logger.info(f"    label={s['label']!r:6} type={s['type']!r:20} res={s['res']!r:4} src={s['src'][:80]}")
             else:
                 logger.info("  <source>: none")
 
-        # ── TRIGGER PLAY ──────────────────────────────────────────────────────
+        if global_vids['total'] == 0:
+            logger.warning("No <video> found at all — try a different keyword/country")
+            return
+
+        # ── TRIGGER PLAY on all ───────────────────────────────────────────────
         n = await page.evaluate(TRIGGER_PLAY)
-        logger.info(f"\nTriggered play() on {n} video(s) — waiting 3s …")
-        await asyncio.sleep(3)
+        logger.info(f"\nTriggered play() on {n} video(s) — waiting 4s …")
+        await asyncio.sleep(4)
 
         # ── VIDEOS AFTER PLAY ─────────────────────────────────────────────────
         logger.info("")
         logger.info("=" * 60)
-        logger.info("VIDEOS — AFTER play() + 3s wait")
+        logger.info("GLOBAL <video> AFTER play() + 4s wait")
         logger.info("=" * 60)
-        vids_after = await page.evaluate(PROBE_VIDEOS_AFTER)
+        vids_after = await page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('video')).slice(0, 6).map(v => ({
+                src: v.src || '',
+                cur: v.currentSrc || '',
+                rs: v.readyState,
+                sources: Array.from(v.querySelectorAll('source')).map(s => ({
+                    src: s.getAttribute('src') || '',
+                    type: s.type || '',
+                    label: s.getAttribute('label') || '',
+                    res: s.getAttribute('res') || ''
+                }))
+            }));
+        }""")
         for i, v in enumerate(vids_after):
-            logger.info(f"\n[vid {i}] readyState={v['readyState']}")
-            logger.info(f"  src       : {v['src'][:100] or '(empty)'}")
-            logger.info(f"  currentSrc: {v['currentSrc'][:100] or '(empty)'}")
+            logger.info(f"\n[vid {i}] readyState={v['rs']}")
+            logger.info(f"  src: {v['src'][:100] or '(empty)'}")
+            logger.info(f"  cur: {v['cur'][:100] or '(empty)'}")
             if v['sources']:
                 logger.info("  <source> elements:")
                 for s in v['sources']:
-                    logger.info(f"    label={s['label']!r:6} type={s['type']!r:20} res={s['res']!r:6} src={s['src'][:80]}")
+                    logger.info(f"    label={s['label']!r:6} type={s['type']!r:20} res={s['res']!r:4} src={s['src'][:80]}")
             else:
                 logger.info("  <source>: none")
 
