@@ -131,6 +131,21 @@ export function AdDrawer({ adId, onClose }: Props) {
               })}
             </div>
 
+            {/* HD на FB */}
+            {ad.library_id && (
+              <div className="border-t pt-3">
+                <button
+                  onClick={() => window.open(`https://www.facebook.com/ads/library/?id=${ad.library_id}`, '_blank', 'noopener,noreferrer')}
+                  className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 font-medium"
+                >
+                  Открыть HD на FB
+                </button>
+                <div className="text-[11px] text-gray-400 mt-1">
+                  для HD нужен аккаунт FB и расширение Ad Library Helper
+                </div>
+              </div>
+            )}
+
             {/* Заголовок */}
             {ad.title && (
               <div className="border-t pt-3">
