@@ -412,14 +412,42 @@ async def probe_feed_deep(page, keyword: str, country: str):
     # Click the first Settings button and look for quality menu
     if controls2:
         logger.info("\n" + "=" * 60)
-        logger.info("CLICKING FIRST SETTINGS BUTTON")
+        logger.info("CLICKING FIRST SETTINGS BUTTON (via JS dispatchEvent)")
         logger.info("=" * 60)
         src_before = vids_after[0]['src'] if vids_after else ''
         try:
-            settings_btn = page.locator('[aria-label="Settings"]').first
-            await settings_btn.scroll_into_view_if_needed()
-            await settings_btn.click()
-            logger.info("  Clicked Settings button")
+            # Use JS click to bypass overlay that intercepts pointer events
+            clicked = await page.evaluate("""
+            () => {
+                // Find Settings button closest to a video element (not the library nav)
+                const vids = document.querySelectorAll('video');
+                if (vids.length === 0) return 'no videos';
+                const vid = vids[0];
+                // Walk up to find player container
+                let node = vid;
+                for (let i = 0; i < 15; i++) {
+                    if (!node.parentElement) break;
+                    node = node.parentElement;
+                    const btn = node.querySelector('[aria-label="Settings"]');
+                    if (btn) {
+                        btn.scrollIntoView({behavior:'instant', block:'center'});
+                        btn.dispatchEvent(new MouseEvent('click',
+                            {bubbles:true, cancelable:true, view:window}));
+                        return 'clicked: ' + btn.className.slice(0, 40);
+                    }
+                }
+                // Fallback: click first Settings found anywhere
+                const btn = document.querySelector('[aria-label="Settings"]');
+                if (btn) {
+                    btn.scrollIntoView({behavior:'instant', block:'center'});
+                    btn.dispatchEvent(new MouseEvent('click',
+                        {bubbles:true, cancelable:true, view:window}));
+                    return 'fallback clicked';
+                }
+                return 'not found';
+            }
+            """)
+            logger.info(f"  JS click result: {clicked}")
             await asyncio.sleep(2)
 
             # Dump all visible short text nodes (quality menu items appear as text)
