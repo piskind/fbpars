@@ -407,10 +407,79 @@ async def probe_feed_deep(page, keyword: str, country: str):
 
     # Check quality controls again after play
     controls2 = await page.evaluate(QUALITY_CONTROLS_JS)
+    logger.info(f"\nSettings buttons after play: {len(controls2)}")
+
+    # Click the first Settings button and look for quality menu
     if controls2:
-        logger.info("\nQuality controls after play:")
-        for c in controls2:
-            logger.info(f"  sel={c['sel']}  aria={c['aria']!r}  text={c['text']!r}")
+        logger.info("\n" + "=" * 60)
+        logger.info("CLICKING FIRST SETTINGS BUTTON")
+        logger.info("=" * 60)
+        src_before = vids_after[0]['src'] if vids_after else ''
+        try:
+            settings_btn = page.locator('[aria-label="Settings"]').first
+            await settings_btn.scroll_into_view_if_needed()
+            await settings_btn.click()
+            logger.info("  Clicked Settings button")
+            await asyncio.sleep(2)
+
+            # Dump all visible short text nodes (quality menu items appear as text)
+            raw_items = await page.evaluate("""
+            () => {
+                const results = [];
+                const walker = document.createTreeWalker(
+                    document.body, NodeFilter.SHOW_TEXT
+                );
+                while (walker.nextNode()) {
+                    const t = walker.currentNode.textContent.trim();
+                    if (t.length > 0 && t.length < 30) {
+                        const p = walker.currentNode.parentElement;
+                        if (p && p.offsetParent !== null) {
+                            results.push({
+                                text: t,
+                                tag: p.tagName,
+                                role: p.getAttribute('role') || '',
+                                aria: p.getAttribute('aria-label') || '',
+                            });
+                        }
+                    }
+                }
+                return results;
+            }
+            """)
+            quality_kws = ['HD', 'SD', '1080', '720', '480', '360', 'Auto',
+                           'Quality', 'Качество', 'uality', 'definition']
+            quality_items = [r for r in raw_items
+                             if any(kw.lower() in r['text'].lower() for kw in quality_kws)]
+
+            if quality_items:
+                logger.info("  QUALITY MENU VISIBLE:")
+                for qi in quality_items:
+                    logger.info(f"    text={qi['text']!r}  tag={qi['tag']}  role={qi['role']!r}")
+            else:
+                logger.info("  No quality options appeared. Last 30 visible items on page:")
+                for r in raw_items[-30:]:
+                    logger.info(f"    {r['text']!r}  tag={r['tag']}  role={r['role']!r}")
+
+            # Try clicking HD
+            for item in quality_items:
+                if any(kw in item['text'] for kw in ['HD', '720', '1080']):
+                    logger.info(f"\n  → Clicking HD: {item['text']!r}")
+                    try:
+                        await page.get_by_text(item['text'], exact=True).first.click()
+                        await asyncio.sleep(3)
+                        vids_hd = await page.evaluate(VIDEO_STATE_JS)
+                        logger.info("  AFTER HD SELECTION:")
+                        for vi, v in enumerate(vids_hd[:2]):
+                            changed = "CHANGED" if v['src'] != src_before else "same"
+                            logger.info(f"    [vid {vi}] {v['w']}x{v['h']}  src={changed}")
+                            if v['src'] != src_before:
+                                logger.info(f"      before: {src_before[:120]}")
+                                logger.info(f"      after:  {v['src'][:120]}")
+                    except Exception as e:
+                        logger.warning(f"  HD click failed: {e}")
+                    break
+        except Exception as e:
+            logger.warning(f"  Settings click failed: {e}")
 
     await page.screenshot(path="/tmp/probe_hd_player.png", full_page=False)
     logger.info("\nScreenshot: docker cp spy_parser:/tmp/probe_hd_player.png ~/Desktop/")
