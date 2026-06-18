@@ -59,13 +59,19 @@ _URL_SCRIPT = """
 # FB shows this section only for ads that ran in EU (regardless of targeting country).
 # Returns {reach: int, breakdown: {countries, age, gender}} or null if section absent.
 # Best-effort — tune selectors if FB changes DOM structure.
-# Click the collapsed "EU transparency" dropdown to reveal reach data.
-# Returns true if button found and clicked, false if not present.
+# Click the "Open Dropdown" button inside the EU transparency section.
+# FB renders a two-part widget: header div ("EU transparency") + toggle ("Open Dropdown").
+# The toggle has zero-width spaces so use includes(), and dispatchEvent to bypass overlays.
+# Returns true if toggle found and clicked, false if EU section absent.
 _EU_EXPAND_SCRIPT = """
 () => {
-    for (const el of document.querySelectorAll('span, div, button')) {
-        if ((el.innerText || '').trim() === 'EU transparency') {
-            el.click();
+    const fire = (el) => el.dispatchEvent(
+        new MouseEvent('click', {bubbles: true, cancelable: true, view: window})
+    );
+    // Primary: click the "Open Dropdown" toggle button
+    for (const el of document.querySelectorAll('div, span, button')) {
+        if ((el.innerText || '').includes('Open Dropdown') && (el.innerText || '').length < 30) {
+            fire(el);
             return true;
         }
     }
