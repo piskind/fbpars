@@ -5,7 +5,7 @@ from sqlalchemy import (
     Integer, String, Text, UniqueConstraint, Index, JSON, func
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 
 class Base(DeclarativeBase):
@@ -120,6 +120,9 @@ class Ad(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_refresh_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     vertical: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+
+    reach: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    reach_breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 

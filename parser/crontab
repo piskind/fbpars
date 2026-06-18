@@ -1,0 +1,1 @@
+0 3 * * * python -m app.refresh_worker

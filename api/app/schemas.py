@@ -94,6 +94,8 @@ class AdOut(BaseModel):
     days_active: int
     first_seen_at: datetime
     last_seen_at: datetime
+    reach: int | None = None
+    reach_breakdown: dict | None = None
     duplicates_count: int = 0
     creatives: list[CreativeOut] = []
 

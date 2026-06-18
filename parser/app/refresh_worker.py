@@ -1,4 +1,5 @@
 import asyncio
+import random
 from datetime import datetime, timezone
 from sqlalchemy import select
 from loguru import logger
@@ -10,8 +11,7 @@ from app.parsers.library_card import parse_card_text
 from app.proxy import rotate_ip
 
 
-REFRESH_INTERVAL_HOURS = 6
-BATCH_SIZE = 50
+BATCH_SIZE = 500  # max active ads per daily run; None = unlimited
 
 # JS: find the external landing URL on the ?id= page.
 # Works for both active (CTA button present) and inactive (URL may be in data attrs).
@@ -55,11 +55,81 @@ _URL_SCRIPT = """
 """
 
 
+# JS that extracts EU Transparency reach data from the ?id= page.
+# FB shows this section only for ads that ran in EU (regardless of targeting country).
+# Returns {reach: int, breakdown: {countries, age, gender}} or null if section absent.
+# Best-effort — tune selectors if FB changes DOM structure.
+_REACH_SCRIPT = """
+() => {
+    try {
+        // Find the EU transparency section: a container whose text mentions "reach"
+        // and has at least one number. Walk from smallest matching element upward.
+        let section = null;
+        for (const el of document.querySelectorAll('div, section')) {
+            const t = el.innerText || '';
+            if (
+                (t.includes('EU transparency') || t.includes('Estimated EU reach') || t.includes('EU ad reach'))
+                && t.length < 8000
+                && /\\d/.test(t)
+            ) {
+                section = el;
+                // Keep looping — we want the MOST SPECIFIC (smallest text) matching element
+                // but stop if we found something reasonable
+                if (t.length < 2000) break;
+            }
+        }
+        if (!section) return null;
+
+        const text = section.innerText;
+
+        // Extract the reach number: first large number after "reach" keyword
+        let reach = null;
+        const reachMatch = text.match(/reach[^\\d]*(\\d[\\d,]*)/i);
+        if (reachMatch) {
+            reach = parseInt(reachMatch[1].replace(/,/g, ''), 10);
+        }
+        if (!reach || reach < 100) {
+            // Fallback: first number with 3+ digits in section
+            const m = text.match(/(\\d[\\d,]{2,})/);
+            if (m) reach = parseInt(m[1].replace(/,/g, ''), 10);
+        }
+        if (!reach || isNaN(reach)) return null;
+
+        // Parse breakdown: rows of "Label  NN%" — country / age range / gender
+        const breakdown = { countries: {}, age: {}, gender: {} };
+        for (const line of text.split('\\n')) {
+            const m = line.match(/^(.+?)\\s+(\\d+(?:\\.\\d+)?)\\s*%\\s*$/);
+            if (!m) continue;
+            const label = m[1].trim();
+            const pct = parseFloat(m[2]);
+            if (/^\\d{2}[-+]\\d{0,2}$|^\\d{2}\\+$/.test(label)) {
+                breakdown.age[label] = pct;
+            } else if (/^(male|female|unknown|other)$/i.test(label)) {
+                breakdown.gender[label.toLowerCase()] = pct;
+            } else if (label.length >= 2 && label.length <= 50) {
+                breakdown.countries[label] = pct;
+            }
+        }
+
+        const hasBreakdown = (
+            Object.keys(breakdown.countries).length > 0 ||
+            Object.keys(breakdown.age).length > 0 ||
+            Object.keys(breakdown.gender).length > 0
+        );
+
+        return { reach, breakdown: hasBreakdown ? breakdown : null };
+    } catch(e) {
+        return null;
+    }
+}
+"""
+
+
 def _build_ad_url(library_id: str) -> str:
     return f"https://www.facebook.com/ads/library/?id={library_id}"
 
 
-async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | None]:
+async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | None, dict | None]:
     """
     Opens a fresh browser context, loads the ?id= page.
     Returns (card_result, found_url) where:
@@ -74,11 +144,11 @@ async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | Non
             ok = await goto_with_challenge_retry(page, url, max_attempts=4, base_wait=6)
         except Exception as e:
             logger.warning(f"[refresh] {library_id}: network error {e}")
-            return None, None
+            return None, None, None
 
         if not ok:
             logger.warning(f"[refresh] {library_id}: challenge not cleared after retries → skip")
-            return None, None
+            return None, None, None
 
         await asyncio.sleep(2)
 
@@ -103,10 +173,10 @@ async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | Non
             card_result = await asyncio.wait_for(page.evaluate(_card_script), timeout=20)
         except asyncio.TimeoutError:
             logger.warning(f"[refresh] {library_id}: evaluate timeout → skip")
-            return None, None
+            return None, None, None
         except Exception as e:
             logger.warning(f"[refresh] {library_id}: evaluate error {e}")
-            return None, None
+            return None, None, None
 
         # Extract landing URL in the same page visit
         found_url: str | None = None
@@ -115,63 +185,72 @@ async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | Non
         except Exception:
             pass
 
+        # Extract EU Reach data if present (best-effort, returns None if section absent)
+        reach_data: dict | None = None
+        try:
+            reach_data = await asyncio.wait_for(page.evaluate(_REACH_SCRIPT), timeout=10)
+        except Exception:
+            pass
+
         if card_result.get("text"):
-            return card_result["text"], found_url
+            return card_result["text"], found_url, reach_data
 
         if card_result.get("bodyLen", 9999) < 500:
             logger.warning(f"[refresh] {library_id}: page nearly empty → skip")
-            return None, None
+            return None, None, None
 
-        return False, found_url
+        return False, found_url, reach_data
 
 
-async def _check_ad_on_fb(library_id: str) -> tuple[bool | None, str | None]:
+async def _check_ad_on_fb(library_id: str) -> tuple[bool | None, str | None, dict | None]:
     """
-    Returns (is_active, found_url):
-      is_active: True = active | False = genuinely gone | None = couldn't verify
-      found_url: external landing URL extracted from the page, or None
+    Returns (is_active, found_url, reach_data):
+      is_active:  True = active | False = genuinely gone | None = couldn't verify
+      found_url:  external landing URL extracted from the page, or None
+      reach_data: {"reach": int, "breakdown": dict|None} from EU transparency section, or None
     """
-    card_text, found_url = await _load_card_text(library_id)
+    card_text, found_url, reach_data = await _load_card_text(library_id)
 
     if card_text is None:
-        return None, None
+        return None, None, None
 
     if card_text is not False:
         try:
             card = parse_card_text(card_text)
-            return bool(card.is_active), found_url
+            return bool(card.is_active), found_url, reach_data
         except Exception as e:
             logger.warning(f"[refresh] {library_id}: parse error {e}")
-            return None, found_url
+            return None, found_url, reach_data
 
     # Card not found on first attempt — retry once to rule out transient proxy disruption
     logger.warning(f"[refresh] {library_id}: card not found on first attempt, retrying in 15s")
     await asyncio.sleep(15)
 
-    card_text2, found_url2 = await _load_card_text(library_id)
+    card_text2, found_url2, reach_data2 = await _load_card_text(library_id)
 
     if card_text2 is None:
-        return None, None
+        return None, None, None
 
     if card_text2 is not False:
         try:
             card = parse_card_text(card_text2)
-            return bool(card.is_active), found_url2 or found_url
+            return bool(card.is_active), found_url2 or found_url, reach_data2 or reach_data
         except Exception as e:
             logger.warning(f"[refresh] {library_id}: parse error on retry {e}")
-            return None, found_url2 or found_url
+            return None, found_url2 or found_url, reach_data2 or reach_data
 
     logger.info(f"[refresh] {library_id}: card not found after retry → INACTIVE")
-    return False, found_url2 or found_url
+    return False, found_url2 or found_url, reach_data2 or reach_data
 
 
-async def _get_active_ads(session, limit: int) -> list[Ad]:
+async def _get_active_ads(session, limit: int | None) -> list[Ad]:
     stmt = (
         select(Ad)
         .where(Ad.is_active.is_(True))
         .order_by(Ad.last_refresh_at.nulls_first(), Ad.id)
-        .limit(limit)
     )
+    if limit is not None:
+        stmt = stmt.limit(limit)
     return list((await session.execute(stmt)).scalars().all())
 
 
@@ -183,24 +262,27 @@ def _compute_days_active(ad: Ad, now: datetime) -> int:
     return ad.days_active
 
 
-async def refresh_batch(limit: int = BATCH_SIZE) -> dict:
+async def refresh_batch(limit: int | None = BATCH_SIZE) -> dict:
     now = datetime.now(timezone.utc)
-    stats = {"checked": 0, "deactivated": 0, "still_active": 0, "unknown": 0, "errors": 0, "url_enriched": 0}
+    stats = {
+        "checked": 0, "deactivated": 0, "still_active": 0,
+        "unknown": 0, "errors": 0, "url_enriched": 0, "reach_updated": 0,
+    }
 
     async with AsyncSessionLocal() as session:
         ads = await _get_active_ads(session, limit)
 
-    logger.info(f"[refresh] Starting batch of {len(ads)} ads")
+    logger.info(f"[refresh] Starting batch of {len(ads)} active ads")
 
     for i, ad in enumerate(ads, 1):
         library_id = ad.library_id
         logger.info(f"[refresh] [{i}/{len(ads)}] checking {library_id}")
 
         try:
-            is_active, found_url = await _check_ad_on_fb(library_id)
+            is_active, found_url, reach_data = await _check_ad_on_fb(library_id)
         except Exception as e:
             logger.error(f"[refresh] {library_id}: unexpected error {e}")
-            is_active, found_url = None, None
+            is_active, found_url, reach_data = None, None, None
             stats["errors"] += 1
         stats["checked"] += 1
 
@@ -223,34 +305,40 @@ async def refresh_batch(limit: int = BATCH_SIZE) -> dict:
                 stats["deactivated"] += 1
                 logger.info(f"[refresh] {library_id}: marked INACTIVE")
 
-            # Enrich link_url if missing and we found one on the page
             if found_url and not db_ad.link_url:
                 db_ad.link_url = found_url
                 stats["url_enriched"] += 1
                 logger.info(f"[refresh] {library_id}: link_url enriched → {found_url}")
 
+            if reach_data and reach_data.get("reach"):
+                db_ad.reach = reach_data["reach"]
+                db_ad.reach_breakdown = reach_data.get("breakdown")
+                stats["reach_updated"] += 1
+                logger.info(f"[refresh] {library_id}: reach={reach_data['reach']}")
+
             await session.commit()
 
-        if i < len(ads) and i % 5 == 0:
-            logger.info("[refresh] Rotating IP")
-            await rotate_ip()
+        if i < len(ads):
+            if i % 5 == 0:
+                logger.info("[refresh] Rotating IP")
+                await rotate_ip()
+            jitter = random.uniform(8, 25)
+            logger.debug(f"[refresh] jitter {jitter:.1f}s")
+            await asyncio.sleep(jitter)
 
-    logger.info(f"[refresh] Batch done: {stats}")
+    logger.info(f"[refresh] Done: {stats}")
     return stats
 
 
-async def run_refresh_loop():
-    logger.info(f"[refresh] Loop started, interval={REFRESH_INTERVAL_HOURS}h, batch={BATCH_SIZE}")
-    while True:
-        try:
-            await refresh_batch()
-        except Exception as e:
-            logger.error(f"[refresh] Loop error: {e}")
-        logger.info(f"[refresh] Sleeping {REFRESH_INTERVAL_HOURS}h until next run")
-        await asyncio.sleep(REFRESH_INTERVAL_HOURS * 3600)
+async def run_refresh_once():
+    logger.info(f"[refresh] Daily run started, batch_limit={BATCH_SIZE}")
+    try:
+        stats = await refresh_batch(limit=None)
+        logger.info(f"[refresh] Daily run complete: {stats}")
+    except Exception as e:
+        logger.error(f"[refresh] Daily run error: {e}")
+        raise
 
 
 if __name__ == "__main__":
-    import sys
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else BATCH_SIZE
-    asyncio.run(refresh_batch(limit))
+    asyncio.run(run_refresh_once())

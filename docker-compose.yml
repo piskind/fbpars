@@ -50,6 +50,29 @@ services:
         limits:
           memory: 3g
 
+  refresh:
+    build:
+      context: ./parser
+      dockerfile: Dockerfile
+    container_name: spy_refresh
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PROXY_HTTP_GATEWAY: http://gost:8888
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gost:
+        condition: service_started
+    volumes:
+      - ./parser:/app
+    command: ["supercronic", "/app/crontab"]
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+
   api:
     build:
       context: ./api
