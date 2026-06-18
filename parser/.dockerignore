@@ -1,0 +1,8 @@
+.git
+__pycache__/
+*.pyc
+*.log
+core.*
+*.db
+debug_eu_*.png
+debug_eu_*.txt
