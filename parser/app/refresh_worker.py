@@ -65,13 +65,11 @@ _URL_SCRIPT = """
 # Returns true if toggle found and clicked, false if EU section absent.
 _EU_EXPAND_SCRIPT = """
 () => {
-    const fire = (el) => el.dispatchEvent(
-        new MouseEvent('click', {bubbles: true, cancelable: true, view: window})
-    );
-    // Primary: click the "Open Dropdown" toggle button
-    for (const el of document.querySelectorAll('div, span, button')) {
-        if ((el.innerText || '').includes('Open Dropdown') && (el.innerText || '').length < 30) {
-            fire(el);
+    // The EU transparency toggle is a [aria-expanded=false] div whose text contains
+    // "Open Dropdown". dispatchEvent bypasses FB's pointer-event overlays.
+    for (const el of document.querySelectorAll('[aria-expanded="false"]')) {
+        if ((el.innerText || '').includes('Open Dropdown')) {
+            el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
             return true;
         }
     }
