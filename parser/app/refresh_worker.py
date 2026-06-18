@@ -62,40 +62,36 @@ _URL_SCRIPT = """
 _REACH_SCRIPT = """
 () => {
     try {
-        // Find the EU transparency section: a container whose text mentions "reach"
-        // and has at least one number. Walk from smallest matching element upward.
+        // Find the EU transparency section. We want the SMALLEST element whose
+        // text contains the EU-specific marker — that's the actual section node,
+        // not the entire page or a parent wrapper.
         let section = null;
         for (const el of document.querySelectorAll('div, section')) {
             const t = el.innerText || '';
             if (
-                (t.includes('EU transparency') || t.includes('Estimated EU reach') || t.includes('EU ad reach'))
-                && t.length < 8000
-                && /\\d/.test(t)
+                (t.includes('EU transparency') || t.includes('EU ad reach'))
+                && t.length >= 10
+                && t.length < 3000
             ) {
                 section = el;
-                // Keep looping — we want the MOST SPECIFIC (smallest text) matching element
-                // but stop if we found something reasonable
-                if (t.length < 2000) break;
+                if (t.length < 500) break;
             }
         }
         if (!section) return null;
 
         const text = section.innerText;
 
-        // Extract the reach number: first large number after "reach" keyword
-        let reach = null;
-        const reachMatch = text.match(/reach[^\\d]*(\\d[\\d,]*)/i);
-        if (reachMatch) {
-            reach = parseInt(reachMatch[1].replace(/,/g, ''), 10);
-        }
-        if (!reach || reach < 100) {
-            // Fallback: first number with 3+ digits in section
-            const m = text.match(/(\\d[\\d,]{2,})/);
-            if (m) reach = parseInt(m[1].replace(/,/g, ''), 10);
-        }
-        if (!reach || isNaN(reach)) return null;
+        // Extract reach: number that immediately follows the "reach" keyword.
+        // Pattern covers: "EU ad reach: 56,096" and "EU ad reach\\n56,096"
+        // No fallback — if this pattern fails, we return null (no random number grab).
+        const reachMatch = text.match(/reach[:\\s\\n]+(\\d[\\d,]*)/i);
+        if (!reachMatch) return null;
 
-        // Parse breakdown: rows of "Label  NN%" — country / age range / gender
+        const reach = parseInt(reachMatch[1].replace(/,/g, ''), 10);
+        // EU-wide reach is bounded physically. >1B means we grabbed the wrong number.
+        if (isNaN(reach) || reach <= 0 || reach > 1_000_000_000) return null;
+
+        // Parse breakdown: lines of "Label  NN%"
         const breakdown = { countries: {}, age: {}, gender: {} };
         for (const line of text.split('\\n')) {
             const m = line.match(/^(.+?)\\s+(\\d+(?:\\.\\d+)?)\\s*%\\s*$/);
@@ -286,37 +282,45 @@ async def refresh_batch(limit: int | None = BATCH_SIZE) -> dict:
             stats["errors"] += 1
         stats["checked"] += 1
 
-        async with AsyncSessionLocal() as session:
-            db_ad = await session.get(Ad, ad.id)
-            if not db_ad:
-                continue
+        try:
+            async with AsyncSessionLocal() as session:
+                db_ad = await session.get(Ad, ad.id)
+                if not db_ad:
+                    continue
 
-            db_ad.last_refresh_at = now
+                db_ad.last_refresh_at = now
 
-            if is_active is None:
-                stats["unknown"] += 1
-            elif is_active:
-                db_ad.last_seen_at = now
-                db_ad.days_active = _compute_days_active(db_ad, now)
-                stats["still_active"] += 1
-            else:
-                db_ad.is_active = False
-                db_ad.days_active = _compute_days_active(db_ad, now)
-                stats["deactivated"] += 1
-                logger.info(f"[refresh] {library_id}: marked INACTIVE")
+                if is_active is None:
+                    stats["unknown"] += 1
+                elif is_active:
+                    db_ad.last_seen_at = now
+                    db_ad.days_active = _compute_days_active(db_ad, now)
+                    stats["still_active"] += 1
+                else:
+                    db_ad.is_active = False
+                    db_ad.days_active = _compute_days_active(db_ad, now)
+                    stats["deactivated"] += 1
+                    logger.info(f"[refresh] {library_id}: marked INACTIVE")
 
-            if found_url and not db_ad.link_url:
-                db_ad.link_url = found_url
-                stats["url_enriched"] += 1
-                logger.info(f"[refresh] {library_id}: link_url enriched → {found_url}")
+                if found_url and not db_ad.link_url:
+                    db_ad.link_url = found_url
+                    stats["url_enriched"] += 1
+                    logger.info(f"[refresh] {library_id}: link_url enriched → {found_url}")
 
-            if reach_data and reach_data.get("reach"):
-                db_ad.reach = reach_data["reach"]
-                db_ad.reach_breakdown = reach_data.get("breakdown")
-                stats["reach_updated"] += 1
-                logger.info(f"[refresh] {library_id}: reach={reach_data['reach']}")
+                if reach_data and reach_data.get("reach"):
+                    reach_val = reach_data["reach"]
+                    if reach_val > 100_000_000 or str(reach_val) == library_id:
+                        logger.warning(f"[refresh] {library_id}: suspicious reach={reach_val} — skipped")
+                    else:
+                        db_ad.reach = reach_val
+                        db_ad.reach_breakdown = reach_data.get("breakdown")
+                        stats["reach_updated"] += 1
+                        logger.info(f"[refresh] {library_id}: reach={reach_val}")
 
-            await session.commit()
+                await session.commit()
+        except Exception as e:
+            logger.error(f"[refresh] {library_id}: DB write error — skipping: {e}")
+            stats["errors"] += 1
 
         if i < len(ads):
             if i % 5 == 0:

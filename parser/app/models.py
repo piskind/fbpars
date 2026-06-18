@@ -121,7 +121,7 @@ class Ad(Base):
     last_refresh_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     vertical: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
 
-    reach: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    reach: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     reach_breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
