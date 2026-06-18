@@ -59,39 +59,51 @@ _URL_SCRIPT = """
 # FB shows this section only for ads that ran in EU (regardless of targeting country).
 # Returns {reach: int, breakdown: {countries, age, gender}} or null if section absent.
 # Best-effort — tune selectors if FB changes DOM structure.
+# Click the collapsed "EU transparency" dropdown to reveal reach data.
+# Returns true if button found and clicked, false if not present.
+_EU_EXPAND_SCRIPT = """
+() => {
+    for (const el of document.querySelectorAll('span, div, button')) {
+        if ((el.innerText || '').trim() === 'EU transparency') {
+            el.click();
+            return true;
+        }
+    }
+    return false;
+}
+"""
+
 _REACH_SCRIPT = """
 () => {
     try {
-        // Find the EU transparency section. We want the SMALLEST element whose
-        // text contains the EU-specific marker — that's the actual section node,
-        // not the entire page or a parent wrapper.
+        // After clicking the EU transparency dropdown, look for the expanded content.
+        // It appears as a section whose text contains both "EU transparency" and a digit.
         let section = null;
         for (const el of document.querySelectorAll('div, section')) {
             const t = el.innerText || '';
             if (
-                (t.includes('EU transparency') || t.includes('EU ad reach'))
-                && t.length >= 10
+                t.includes('EU transparency')
+                && t.length >= 20
                 && t.length < 3000
+                && /\\d/.test(t)
             ) {
                 section = el;
-                if (t.length < 500) break;
+                if (t.length < 600) break;
             }
         }
         if (!section) return null;
 
         const text = section.innerText;
 
-        // Extract reach: number that immediately follows the "reach" keyword.
-        // Pattern covers: "EU ad reach: 56,096" and "EU ad reach\\n56,096"
-        // No fallback — if this pattern fails, we return null (no random number grab).
+        // After expansion, FB shows: "Estimated EU reach\\n56,096" or "EU reach: 56,096"
+        // Match a number that directly follows the reach keyword (on next line or after colon/space).
         const reachMatch = text.match(/reach[:\\s\\n]+(\\d[\\d,]*)/i);
         if (!reachMatch) return null;
 
         const reach = parseInt(reachMatch[1].replace(/,/g, ''), 10);
-        // EU-wide reach is bounded physically. >1B means we grabbed the wrong number.
         if (isNaN(reach) || reach <= 0 || reach > 1_000_000_000) return null;
 
-        // Parse breakdown: lines of "Label  NN%"
+        // Parse breakdown: lines matching "Label  NN%"
         const breakdown = { countries: {}, age: {}, gender: {} };
         for (const line of text.split('\\n')) {
             const m = line.match(/^(.+?)\\s+(\\d+(?:\\.\\d+)?)\\s*%\\s*$/);
@@ -181,9 +193,12 @@ async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | Non
         except Exception:
             pass
 
-        # Extract EU Reach data if present (best-effort, returns None if section absent)
+        # Expand the "EU transparency" dropdown (collapsed by default) then extract reach.
         reach_data: dict | None = None
         try:
+            clicked = await asyncio.wait_for(page.evaluate(_EU_EXPAND_SCRIPT), timeout=5)
+            if clicked:
+                await asyncio.sleep(1.5)  # wait for dropdown animation
             reach_data = await asyncio.wait_for(page.evaluate(_REACH_SCRIPT), timeout=10)
         except Exception:
             pass
@@ -326,7 +341,7 @@ async def refresh_batch(limit: int | None = BATCH_SIZE) -> dict:
             if i % 5 == 0:
                 logger.info("[refresh] Rotating IP")
                 await rotate_ip()
-            jitter = random.uniform(8, 25)
+            jitter = random.uniform(4, 10)
             logger.debug(f"[refresh] jitter {jitter:.1f}s")
             await asyncio.sleep(jitter)
 
