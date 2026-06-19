@@ -67,7 +67,7 @@ services:
         condition: service_started
     volumes:
       - ./parser:/app
-    command: ["supercronic", "/app/crontab"]
+    command: ["supercronic", "-shell", "/usr/bin/sh", "/app/crontab"]
     deploy:
       resources:
         limits:
