@@ -60,6 +60,7 @@ services:
       - .env
     environment:
       PROXY_HTTP_GATEWAY: http://gost:8888
+      SHELL: /usr/bin/sh
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,7 +68,7 @@ services:
         condition: service_started
     volumes:
       - ./parser:/app
-    command: ["supercronic", "-shell", "/usr/bin/sh", "/app/crontab"]
+    command: ["python", "-m", "app.scheduler"]
     deploy:
       resources:
         limits:
