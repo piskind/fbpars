@@ -1,5 +1,6 @@
 import asyncio
 import random
+import re
 from datetime import datetime, timezone
 from sqlalchemy import select
 from loguru import logger
@@ -55,90 +56,127 @@ _URL_SCRIPT = """
 """
 
 
-# JS that extracts EU Transparency reach data from the ?id= page.
-# FB shows this section only for ads that ran in EU (regardless of targeting country).
-# Returns {reach: int, breakdown: {countries, age, gender}} or null if section absent.
-# Best-effort — tune selectors if FB changes DOM structure.
-# Click the "Open Dropdown" button inside the EU transparency section.
-# FB renders a two-part widget: header div ("EU transparency") + toggle ("Open Dropdown").
-# The toggle has zero-width spaces so use includes(), and dispatchEvent to bypass overlays.
-# Returns true if toggle found and clicked, false if EU section absent.
-_EU_EXPAND_SCRIPT = """
-() => {
-    // The EU transparency toggle is a [aria-expanded=false] div whose text contains
-    // "Open Dropdown". dispatchEvent bypasses FB's pointer-event overlays.
-    for (const el of document.querySelectorAll('[aria-expanded="false"]')) {
-        if ((el.innerText || '').includes('Open Dropdown')) {
-            el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
-            return true;
-        }
-    }
-    return false;
-}
+# Button texts that reveal the EU details panel (multi-language, ported from debug_eu_ads.py).
+_EXPAND_TEXTS = [
+    "See ad details", "Ad details", "About this ad",
+    "Informazioni sull'inserzione", "Información del anuncio",
+    "Información sobre el anuncio", "Dati sull'inserzione",
+    "Ver detalles del anuncio", "Ver los detalles del anuncio",
+    "Dettagli dell'inserzione", "Подробнее", "See details", "Details",
+]
+
+# Texts inside the opened panel to expand the Transparency/Reach sub-section.
+_TRANSPARENCY_TEXTS = [
+    "Transparency by location", "Transparency",
+    "Reach by location", "EU transparency", "Ad reach", "Reach",
+]
+
+# JS: find the smallest container that holds the most EU transparency markers.
+_EU_MARKERS = [
+    "Transparency by location", "EU transparency", "Ad Details",
+    "Reach by location", "About the advertiser", "Advertiser and payer",
+    "Audience", "Age", "Gender",
+]
+_EU_MARKERS_JS = str(_EU_MARKERS).replace("'", '"')
+_EU_BLOCK_SCRIPT = f"""
+() => {{
+    const MARKERS = {_EU_MARKERS_JS};
+    let best = null, bestScore = Infinity;
+    for (const el of document.querySelectorAll('div, section, main, article')) {{
+        const text = (el.innerText || '').trim();
+        if (text.length < 100 || text.length > 30000) continue;
+        const hits = MARKERS.filter(m => text.includes(m)).length;
+        if (hits === 0) continue;
+        const score = text.length / (hits * hits);
+        if (score < bestScore) {{ best = el; bestScore = score; }}
+    }}
+    if (!best) return null;
+    return {{ text: best.innerText, score: Math.round(bestScore), len: best.innerText.length }};
+}}
 """
 
-_REACH_SCRIPT = """
-() => {
-    try {
-        // After clicking the EU transparency dropdown, look for the expanded content.
-        // It appears as a section whose text contains both "EU transparency" and a digit.
-        let section = null;
-        for (const el of document.querySelectorAll('div, section')) {
-            const t = el.innerText || '';
-            if (
-                t.includes('EU transparency')
-                && t.length >= 20
-                && t.length < 3000
-                && /\\d/.test(t)
-            ) {
-                section = el;
-                if (t.length < 600) break;
-            }
-        }
-        if (!section) return null;
 
-        const text = section.innerText;
+async def _eu_click_text(page, candidates: list[str]) -> bool:
+    """Click the first small element matching any candidate text. Returns True if clicked."""
+    for text in candidates:
+        try:
+            loc = page.get_by_text(text, exact=False)
+            n = await loc.count()
+            if n == 0:
+                continue
+            for i in range(min(n, 4)):
+                el = loc.nth(i)
+                inner = (await el.inner_text(timeout=2_000)).strip()
+                if len(inner) < 120:
+                    await el.click(timeout=5_000)
+                    await asyncio.sleep(2)
+                    return True
+        except Exception:
+            pass
+    return False
 
-        // After expansion, FB shows: "Estimated EU reach\\n56,096" or "EU reach: 56,096"
-        // Match a number that directly follows the reach keyword (on next line or after colon/space).
-        const reachMatch = text.match(/reach[:\\s\\n]+(\\d[\\d,]*)/i);
-        if (!reachMatch) return null;
 
-        const reach = parseInt(reachMatch[1].replace(/,/g, ''), 10);
-        if (isNaN(reach) || reach <= 0 || reach > 1_000_000_000) return null;
+def _parse_eu_reach(text: str, library_id: str) -> dict | None:
+    """Parse reach number and breakdowns from the EU transparency block innerText."""
+    if not text:
+        return None
 
-        // Parse breakdown: lines matching "Label  NN%"
-        const breakdown = { countries: {}, age: {}, gender: {} };
-        for (const line of text.split('\\n')) {
-            const m = line.match(/^(.+?)\\s+(\\d+(?:\\.\\d+)?)\\s*%\\s*$/);
-            if (!m) continue;
-            const label = m[1].trim();
-            const pct = parseFloat(m[2]);
-            if (/^\\d{2}[-+]\\d{0,2}$|^\\d{2}\\+$/.test(label)) {
-                breakdown.age[label] = pct;
-            } else if (/^(male|female|unknown|other)$/i.test(label)) {
-                breakdown.gender[label.toLowerCase()] = pct;
-            } else if (label.length >= 2 && label.length <= 50) {
-                breakdown.countries[label] = pct;
-            }
-        }
+    # Reach: first formatted number after any reach keyword (multi-language)
+    reach: int | None = None
+    m = re.search(
+        r'(?:reach|охват|alcance|portata|portée)[^\d]*(\d[\d,.\s]*)',
+        text, re.IGNORECASE,
+    )
+    if m:
+        raw = m.group(1).split('\n')[0][:15]
+        num_str = re.sub(r'[\s,.]', '', raw)
+        try:
+            reach = int(num_str)
+        except ValueError:
+            pass
 
-        const hasBreakdown = (
-            Object.keys(breakdown.countries).length > 0 ||
-            Object.keys(breakdown.age).length > 0 ||
-            Object.keys(breakdown.gender).length > 0
-        );
+    if not reach or reach <= 0:
+        return None
+    if reach > 100_000_000 or str(reach) == library_id:
+        return None
 
-        return { reach, breakdown: hasBreakdown ? breakdown : null };
-    } catch(e) {
-        return null;
-    }
-}
-"""
+    # Breakdowns: lines of "Label  NN[.N]%"
+    countries: dict = {}
+    age: dict = {}
+    gender: dict = {}
+    for line in text.split('\n'):
+        line = line.strip()
+        pm = re.match(r'^(.+?)\s+(\d+(?:[.,]\d+)?)\s*%', line)
+        if not pm:
+            continue
+        label = pm.group(1).strip()
+        try:
+            pct = float(pm.group(2).replace(',', '.'))
+        except ValueError:
+            continue
+        if re.match(r'^\d{2}[-–]\d{2}$|^\d{2}\+$|^65\+$', label):
+            age[label] = pct
+        elif re.match(
+            r'^(male|female|man|woman|unknown|other|homme|femme|hombre|mujer|мужчины|женщины)$',
+            label, re.IGNORECASE,
+        ):
+            gender[label.lower()] = pct
+        elif 2 <= len(label) <= 50:
+            countries[label] = pct
+
+    breakdown: dict = {}
+    if countries:
+        breakdown['countries'] = countries
+    if age:
+        breakdown['age'] = age
+    if gender:
+        breakdown['gender'] = gender
+
+    return {"reach": reach, "breakdown": breakdown if breakdown else None}
 
 
 def _build_ad_url(library_id: str) -> str:
-    return f"https://www.facebook.com/ads/library/?id={library_id}"
+    return f"https://www.facebook.com/ads/library/?id={library_id}&country=DE"
 
 
 async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | None, dict | None]:
@@ -197,15 +235,22 @@ async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | Non
         except Exception:
             pass
 
-        # Expand the "EU transparency" dropdown (collapsed by default) then extract reach.
+        # Two-step EU reach extraction: Step 1 = "See ad details", Step 2 = "Transparency by location"
         reach_data: dict | None = None
         try:
-            clicked = await asyncio.wait_for(page.evaluate(_EU_EXPAND_SCRIPT), timeout=5)
-            if clicked:
-                await asyncio.sleep(1.5)  # wait for dropdown animation
-            reach_data = await asyncio.wait_for(page.evaluate(_REACH_SCRIPT), timeout=10)
-        except Exception:
-            pass
+            step1 = await _eu_click_text(page, _EXPAND_TEXTS)
+            if step1:
+                await _eu_click_text(page, _TRANSPARENCY_TEXTS)
+            block = await asyncio.wait_for(page.evaluate(_EU_BLOCK_SCRIPT), timeout=10)
+            if block and block.get("text"):
+                reach_data = _parse_eu_reach(block["text"], library_id)
+                if reach_data:
+                    logger.debug(
+                        f"[refresh] {library_id}: EU block score={block.get('score')} "
+                        f"len={block.get('len')} reach={reach_data.get('reach')}"
+                    )
+        except Exception as e:
+            logger.debug(f"[refresh] {library_id}: EU reach extraction error: {e}")
 
         if card_result.get("text"):
             return card_result["text"], found_url, reach_data
