@@ -44,8 +44,9 @@ RUN pip install -r requirements.txt
 # Установка Playwright + Chromium
 RUN playwright install chromium
 
-# supercronic для cron-режима refresh-воркера
-RUN wget -q https://github.com/aptible/supercronic/releases/download/v0.2.33/supercronic-linux-amd64 \
+# supercronic для cron-режима refresh-воркера (arch-aware: amd64 / arm64)
+RUN ARCH=$(dpkg --print-architecture) && \
+    wget -q "https://github.com/aptible/supercronic/releases/download/v0.2.33/supercronic-linux-${ARCH}" \
     -O /usr/local/bin/supercronic && chmod +x /usr/local/bin/supercronic
 
 COPY . .
