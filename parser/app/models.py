@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from sqlalchemy import (
     BigInteger, Boolean, DateTime, Enum as SAEnum, ForeignKey,
-    Integer, String, Text, UniqueConstraint, Index, JSON, func
+    Index, Integer, String, Text, UniqueConstraint, JSON, func
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -123,11 +123,18 @@ class Ad(Base):
 
     reach: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     reach_breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    eu_countries: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    used_in_ads_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    spend_estimate: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     creatives: Mapped[list["Creative"]] = relationship(back_populates="ad", cascade="all, delete-orphan")
     moderation: Mapped["ModerationEntry"] = relationship(back_populates="ad", uselist=False, cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_ads_eu_countries_gin", "eu_countries", postgresql_using="gin"),
+    )
 
 
 class Creative(Base):

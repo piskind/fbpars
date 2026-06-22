@@ -96,6 +96,9 @@ class AdOut(BaseModel):
     last_seen_at: datetime
     reach: int | None = None
     reach_breakdown: dict | None = None
+    eu_countries: list[str] | None = None
+    used_in_ads_count: int | None = None
+    spend_estimate: int | None = None
     duplicates_count: int = 0
     creatives: list[CreativeOut] = []
 

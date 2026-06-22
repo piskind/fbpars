@@ -1,4 +1,5 @@
 import asyncio
+import os
 import random
 import re
 from datetime import datetime, timezone
@@ -10,6 +11,8 @@ from app.models import Ad
 from app.browser import browser_context, goto_with_challenge_retry
 from app.parsers.library_card import parse_card_text
 from app.proxy import rotate_ip
+
+_SPEND_CPM = float(os.getenv("SPEND_CPM", "12"))
 
 
 BATCH_SIZE = 500  # max active ads per daily run; None = unlimited
@@ -71,6 +74,48 @@ _TRANSPARENCY_TEXTS = [
     "Reach by location", "EU transparency", "Ad reach", "Reach",
 ]
 
+# JS: extract Targeting table and Reach table rows from the already-opened EU block.
+# Runs on the live DOM after the two expand clicks — no extra navigation, no memory cost.
+_EU_TABLE_SCRIPT = """
+() => {
+    const result = { targeting: [], demographic: [] };
+
+    // <table aria-label="Targeting table"> — cols: Location / Location type / Included or excluded
+    const tgt = document.querySelector('[aria-label="Targeting table"]');
+    if (tgt) {
+        for (const row of tgt.querySelectorAll('tbody tr')) {
+            const cells = [...row.querySelectorAll('td')];
+            if (cells.length >= 3) {
+                result.targeting.push({
+                    location: (cells[0].innerText || '').trim(),
+                    type:     (cells[1].innerText || '').trim(),
+                    status:   (cells[2].innerText || '').trim()
+                });
+            }
+        }
+    }
+
+    // <table aria-label^="Reach table"> — cols: Location / Age Range / Gender / Reach
+    const rch = document.querySelector('[aria-label^="Reach table"]');
+    if (rch) {
+        for (const row of rch.querySelectorAll('tbody tr')) {
+            const cells = [...row.querySelectorAll('td')];
+            if (cells.length >= 4) {
+                const rawNum = (cells[3].innerText || '').replace(/[^0-9]/g, '');
+                result.demographic.push({
+                    location: (cells[0].innerText || '').trim(),
+                    age:      (cells[1].innerText || '').trim(),
+                    gender:   (cells[2].innerText || '').trim(),
+                    reach:    rawNum ? parseInt(rawNum, 10) : 0
+                });
+            }
+        }
+    }
+
+    return result;
+}
+"""
+
 # JS: find the smallest container that holds the most EU transparency markers.
 _EU_MARKERS = [
     "Transparency by location", "EU transparency", "Ad Details",
@@ -116,8 +161,70 @@ async def _eu_click_text(page, candidates: list[str]) -> bool:
     return False
 
 
-def _parse_eu_reach(text: str, library_id: str) -> dict | None:
-    """Parse reach number and breakdowns from the EU transparency block innerText."""
+_INCLUDED_WORDS = ("includ", "включ", "incluid", "inclus")
+_COUNTRY_WORDS = ("country", "страна", "pais", "país", "land", "pays")
+
+
+def _is_included_status(status: str) -> bool:
+    s = status.lower()
+    return any(w in s for w in _INCLUDED_WORDS)
+
+
+def _is_country_type(type_str: str) -> bool:
+    t = type_str.lower()
+    return any(w in t for w in _COUNTRY_WORDS)
+
+
+def _build_breakdown(block_text: str, dom_data: dict | None) -> dict | None:
+    """Build the reach_breakdown structure from DOM table data + block text for age/gender."""
+    if not dom_data:
+        return None
+
+    targeting_rows = dom_data.get("targeting") or []
+    demographic_rows = dom_data.get("demographic") or []
+
+    # Age: line after "Age" heading, strip trailing "years old"
+    age: str | None = None
+    m = re.search(r'\bAge\b\s*\n+\s*([^\n]+)', block_text, re.IGNORECASE)
+    if m:
+        age_raw = m.group(1).strip()
+        age = re.sub(r'\s*years?\s*old.*$', '', age_raw, flags=re.IGNORECASE).strip() or None
+
+    # Gender: line after "Gender" heading
+    gender: str | None = None
+    m = re.search(r'\bGender\b\s*\n+\s*([^\n]+)', block_text, re.IGNORECASE)
+    if m:
+        gender = m.group(1).strip() or None
+
+    countries_included = [
+        r["location"] for r in targeting_rows
+        if _is_country_type(r.get("type", "")) and _is_included_status(r.get("status", ""))
+    ]
+
+    has_targeting = bool(targeting_rows or age or gender)
+    has_demographic = bool(demographic_rows)
+
+    if not has_targeting and not has_demographic:
+        return None
+
+    breakdown: dict = {}
+    if has_targeting:
+        targeting: dict = {"locations": targeting_rows}
+        if countries_included:
+            targeting["countries_included"] = countries_included
+        if age:
+            targeting["age"] = age
+        if gender:
+            targeting["gender"] = gender
+        breakdown["targeting"] = targeting
+    if has_demographic:
+        breakdown["demographic"] = demographic_rows
+
+    return breakdown
+
+
+def _parse_eu_reach(text: str, library_id: str, dom_data: dict | None = None) -> dict | None:
+    """Parse reach number from EU block innerText; build breakdown from DOM table data."""
     if not text:
         return None
 
@@ -140,39 +247,8 @@ def _parse_eu_reach(text: str, library_id: str) -> dict | None:
     if reach > 100_000_000 or str(reach) == library_id:
         return None
 
-    # Breakdowns: lines of "Label  NN[.N]%"
-    countries: dict = {}
-    age: dict = {}
-    gender: dict = {}
-    for line in text.split('\n'):
-        line = line.strip()
-        pm = re.match(r'^(.+?)\s+(\d+(?:[.,]\d+)?)\s*%', line)
-        if not pm:
-            continue
-        label = pm.group(1).strip()
-        try:
-            pct = float(pm.group(2).replace(',', '.'))
-        except ValueError:
-            continue
-        if re.match(r'^\d{2}[-–]\d{2}$|^\d{2}\+$|^65\+$', label):
-            age[label] = pct
-        elif re.match(
-            r'^(male|female|man|woman|unknown|other|homme|femme|hombre|mujer|мужчины|женщины)$',
-            label, re.IGNORECASE,
-        ):
-            gender[label.lower()] = pct
-        elif 2 <= len(label) <= 50:
-            countries[label] = pct
-
-    breakdown: dict = {}
-    if countries:
-        breakdown['countries'] = countries
-    if age:
-        breakdown['age'] = age
-    if gender:
-        breakdown['gender'] = gender
-
-    return {"reach": reach, "breakdown": breakdown if breakdown else None}
+    breakdown = _build_breakdown(text, dom_data)
+    return {"reach": reach, "breakdown": breakdown}
 
 
 def _build_ad_url(library_id: str) -> str:
@@ -243,7 +319,12 @@ async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | Non
                 await _eu_click_text(page, _TRANSPARENCY_TEXTS)
             block = await asyncio.wait_for(page.evaluate(_EU_BLOCK_SCRIPT), timeout=10)
             if block and block.get("text"):
-                reach_data = _parse_eu_reach(block["text"], library_id)
+                dom_data: dict | None = None
+                try:
+                    dom_data = await asyncio.wait_for(page.evaluate(_EU_TABLE_SCRIPT), timeout=10)
+                except Exception as te:
+                    logger.debug(f"[refresh] {library_id}: EU table extract error: {te}")
+                reach_data = _parse_eu_reach(block["text"], library_id, dom_data)
                 if reach_data:
                     logger.debug(
                         f"[refresh] {library_id}: EU block score={block.get('score')} "
@@ -377,7 +458,11 @@ async def refresh_batch(limit: int | None = BATCH_SIZE) -> dict:
                         logger.warning(f"[refresh] {library_id}: suspicious reach={reach_val} — skipped")
                     else:
                         db_ad.reach = reach_val
-                        db_ad.reach_breakdown = reach_data.get("breakdown")
+                        breakdown = reach_data.get("breakdown")
+                        db_ad.reach_breakdown = breakdown
+                        targeting = (breakdown or {}).get("targeting") or {}
+                        db_ad.eu_countries = targeting.get("countries_included") or None
+                        db_ad.spend_estimate = int(reach_val * _SPEND_CPM / 1000)
                         stats["reach_updated"] += 1
                         logger.info(f"[refresh] {library_id}: reach={reach_val}")
 

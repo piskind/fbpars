@@ -58,6 +58,7 @@ class ParsedCard:
     display_url: str | None = None
     platforms: list[str] = field(default_factory=list)
     lead_form: bool = False
+    used_in_ads_count: int = 1
     image_urls: list[str] = field(default_factory=list)
     video_urls: list[str] = field(default_factory=list)
     poster_urls: list[str] = field(default_factory=list)
@@ -101,6 +102,13 @@ def parse_card_text(text: str) -> ParsedCard:
 
     if any(marker in text for marker in LEAD_FORM_MARKERS):
         card.lead_form = True
+
+    m = re.search(
+        r'used in (\d+) ads|используется в (\d+) объявлениях',
+        text, re.IGNORECASE,
+    )
+    if m:
+        card.used_in_ads_count = int(m.group(1) or m.group(2))
 
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     card.display_url = extract_display_url(lines)

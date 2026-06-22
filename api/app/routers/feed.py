@@ -57,6 +57,10 @@ async def list_feed(
     started_to: datetime | None = Query(None),
     last_seen_from: datetime | None = Query(None),
     last_seen_to: datetime | None = Query(None),
+    reach_min: int | None = Query(None),
+    spend_min: int | None = Query(None),
+    eu_country: list[str] | None = Query(None),
+    used_in_ads_min: int | None = Query(None),
     sort: str = Query("newest", regex="^(newest|oldest|days_desc|days_asc)$"),
     limit: int = Query(40, le=1000),
     offset: int = Query(0, ge=0),
@@ -128,6 +132,14 @@ async def list_feed(
             Ad.library_id.ilike(like),
             Ad.display_url.ilike(like),
         ))
+    if reach_min is not None:
+        stmt = stmt.where(Ad.reach >= reach_min)
+    if spend_min is not None:
+        stmt = stmt.where(Ad.spend_estimate >= spend_min)
+    if eu_country:
+        stmt = stmt.where(Ad.eu_countries.op("&&")(eu_country))
+    if used_in_ads_min is not None:
+        stmt = stmt.where(Ad.used_in_ads_count >= used_in_ads_min)
 
     if sort == "newest":
         stmt = stmt.order_by(Ad.first_seen_at.desc())

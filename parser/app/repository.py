@@ -79,6 +79,7 @@ async def upsert_ad(
             existing.platforms = card.platforms
         if card.lead_form and not existing.lead_form:
             existing.lead_form = True
+        existing.used_in_ads_count = card.used_in_ads_count
         if card.page_name and not existing.page_name:
             existing.page_name = card.page_name
         if page_id and not existing.page_id:
@@ -122,6 +123,7 @@ async def upsert_ad(
         media_type=_detect_media_type(card),
         platforms=card.platforms or None,
         lead_form=card.lead_form,
+        used_in_ads_count=card.used_in_ads_count,
         app_store=enriched["app_store"],
         ecom_platform=enriched["ecom_platform"],
         language=enriched["language"],
