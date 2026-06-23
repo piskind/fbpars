@@ -111,12 +111,8 @@ async def main():
     except Exception as exc:
         logger.warning(f"IP check failed: {exc}")
 
-    from app.refresh_worker import run_refresh_loop
-    logger.info("Starting refresh loop + discovery poll loop")
-    await asyncio.gather(
-        run_refresh_loop(),
-        _discovery_poll_loop(),
-    )
+    logger.info("Starting discovery poll loop")
+    await _discovery_poll_loop()
 
 
 if __name__ == "__main__":
