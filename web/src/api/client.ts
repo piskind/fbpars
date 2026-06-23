@@ -87,6 +87,23 @@ export type Ad = {
   first_seen_at: string
   last_seen_at: string
   duplicates_count: number
+  reach: number | null
+  reach_breakdown: {
+    targeting?: {
+      age?: string
+      gender?: string
+      countries_included?: string[]
+    }
+    demographic?: Array<{
+      location: string
+      age: string
+      gender: string
+      reach: number
+    }>
+  } | null
+  eu_countries: string[] | null
+  spend_estimate: number | null
+  used_in_ads_count: number | null
   creatives: Creative[]
 }
 

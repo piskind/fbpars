@@ -16,6 +16,30 @@ function adsLibraryUrl(pageId: string | null): string | null {
   return `https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&view_all_page_id=${pageId}`
 }
 
+type DemoRow = { location: string; age: string; gender: string; reach: number }
+
+function calcGenderText(rows: DemoRow[]): string | null {
+  const totals: Record<string, number> = {}
+  let total = 0
+  for (const r of rows) {
+    totals[r.gender] = (totals[r.gender] ?? 0) + r.reach
+    total += r.reach
+  }
+  if (!total) return null
+  const pct = (g: string) => Math.round(((totals[g] ?? 0) / total) * 100)
+  const parts: string[] = []
+  if (pct('Male') > 0) parts.push(`М ${pct('Male')}%`)
+  if (pct('Female') > 0) parts.push(`Ж ${pct('Female')}%`)
+  return parts.length ? parts.join(' · ') : null
+}
+
+function calcTopAge(rows: DemoRow[]): string | null {
+  const totals: Record<string, number> = {}
+  for (const r of rows) totals[r.age] = (totals[r.age] ?? 0) + r.reach
+  const entries = Object.entries(totals).sort((a, b) => b[1] - a[1])
+  return entries[0]?.[0] ?? null
+}
+
 type Props = {
   adId: number | null
   onClose: () => void
@@ -25,6 +49,7 @@ export function AdDrawer({ adId, onClose }: Props) {
   const [expandedForId, setExpandedForId] = useState<number | null>(null)
   const [similarBy, setSimilarBy] = useState<'fp' | 'domain'>('fp')
   const [prevAdId, setPrevAdId] = useState(adId)
+  const [demoExpanded, setDemoExpanded] = useState(false)
 
   if (prevAdId !== adId) {
     setPrevAdId(adId)
@@ -272,6 +297,110 @@ export function AdDrawer({ adId, onClose }: Props) {
                 </>
               )}
             </div>
+
+            {/* EU Статистика */}
+            {(() => {
+              const demo = (ad.reach_breakdown?.demographic ?? []) as DemoRow[]
+              const genderText = demo.length ? calcGenderText(demo) : null
+              const topAge = demo.length ? calcTopAge(demo) : null
+              return (
+                <div className="border-t pt-4">
+                  <div className="text-xs uppercase text-gray-400 mb-3">Статистика по объявлению</div>
+                  {!ad.reach ? (
+                    <div className="text-xs text-gray-400">Доступно только для объявлений из стран ЕС</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {/* Три карточки: Охват / Пол / Возраст */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="bg-gray-50 rounded-lg p-2">
+                          <div className="text-[10px] text-gray-400 mb-0.5">Охват</div>
+                          <div className="text-sm font-semibold">{ad.reach.toLocaleString('ru-RU')}</div>
+                        </div>
+                        {genderText && (
+                          <div className="bg-gray-50 rounded-lg p-2">
+                            <div className="text-[10px] text-gray-400 mb-0.5">Пол</div>
+                            <div className="text-xs font-medium leading-tight">{genderText}</div>
+                          </div>
+                        )}
+                        {topAge && (
+                          <div className="bg-gray-50 rounded-lg p-2">
+                            <div className="text-[10px] text-gray-400 mb-0.5">Возраст</div>
+                            <div className="text-xs font-medium">{topAge}</div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Дополнительные поля */}
+                      <div className="grid grid-cols-2 gap-y-2 text-xs">
+                        {ad.eu_countries && ad.eu_countries.length > 0 && (
+                          <>
+                            <div className="text-gray-400">Страны показа</div>
+                            <div className="flex flex-wrap gap-1">
+                              {ad.eu_countries.map((c) => (
+                                <span key={c} className="px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded text-[11px]">{c}</span>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                        {ad.spend_estimate != null && (
+                          <>
+                            <div className="text-gray-400">Спенд</div>
+                            <div className="text-gray-800">
+                              ≈ ${ad.spend_estimate.toLocaleString('ru-RU')}{' '}
+                              <span className="text-gray-400">(оценка)</span>
+                            </div>
+                          </>
+                        )}
+                        {ad.used_in_ads_count != null && ad.used_in_ads_count > 1 && (
+                          <>
+                            <div className="text-gray-400">Использование</div>
+                            <div className="text-gray-800">В {ad.used_in_ads_count} объявлениях</div>
+                          </>
+                        )}
+                      </div>
+
+                      {/* Сворачиваемая разбивка */}
+                      {demo.length > 0 && (
+                        <div>
+                          <button
+                            onClick={() => setDemoExpanded((v) => !v)}
+                            className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                          >
+                            {demoExpanded ? '▲' : '▼'} Подробная разбивка
+                          </button>
+                          {demoExpanded && (
+                            <div className="mt-2 overflow-x-auto">
+                              <table className="w-full text-xs border-collapse">
+                                <thead>
+                                  <tr className="text-gray-400 border-b border-gray-200">
+                                    <th className="text-left py-1 pr-2 font-normal">Страна</th>
+                                    <th className="text-left py-1 pr-2 font-normal">Возраст</th>
+                                    <th className="text-left py-1 pr-2 font-normal">Пол</th>
+                                    <th className="text-right py-1 font-normal">Охват</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {demo.map((row, i) => (
+                                    <tr key={i} className="border-b border-gray-100">
+                                      <td className="py-1 pr-2 text-gray-700">{row.location}</td>
+                                      <td className="py-1 pr-2 text-gray-700">{row.age}</td>
+                                      <td className="py-1 pr-2 text-gray-700">
+                                        {row.gender === 'Male' ? 'М' : row.gender === 'Female' ? 'Ж' : '—'}
+                                      </td>
+                                      <td className="py-1 text-right text-gray-800">{row.reach.toLocaleString('ru-RU')}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
 
             {/* Похожие */}
             <div className="border-t pt-4">
