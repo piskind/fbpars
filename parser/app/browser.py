@@ -113,15 +113,41 @@ async def goto_with_challenge_retry(
     return False
 
 
-def build_library_url(country: str, keyword: str, languages: list[str] | None = None) -> str:
+def build_library_url(
+    country: str,
+    keyword: str | None,
+    languages: list[str] | None = None,
+    active_status: str = "all",
+    media_type: str = "all",
+    platforms: list[str] | None = None,
+    date_from=None,
+    date_to=None,
+    advertiser: str | None = None,
+) -> str:
     from urllib.parse import quote
+    # Braille blank U+2800 — invisible keyword that returns broad results
+    q = quote(keyword) if keyword else "%E2%A0%80"
     url = (
         "https://www.facebook.com/ads/library/"
-        f"?active_status=all&ad_type=all&country={country}"
-        f"&q={quote(keyword)}&search_type=keyword_unordered&media_type=all"
+        f"?active_status={active_status}&ad_type=all&country={country}"
+        f"&q={q}&search_type=keyword_unordered&media_type={media_type}"
     )
     for i, lang in enumerate(languages or []):
         url += f"&content_languages%5B{i}%5D={lang}"
+    for i, platform in enumerate(platforms or []):
+        url += f"&publisher_platforms%5B{i}%5D={platform}"
+    if date_from is not None:
+        url += f"&start_date%5Bmin%5D={date_from}"
+    if date_to is not None:
+        url += f"&start_date%5Bmax%5D={date_to}"
+    if advertiser:
+        # TODO: determine correct FB Ad Library URL parameter for advertiser filter.
+        # Possibly search_type=page with a different q, or a dedicated param.
+        # Log the intended value and skip for now.
+        logger.warning(
+            f"[build_library_url] advertiser filter not yet mapped to a URL param "
+            f"— skipped. advertiser={advertiser!r}"
+        )
     return url
 
 

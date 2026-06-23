@@ -1,5 +1,5 @@
-from datetime import datetime
-from pydantic import BaseModel, ConfigDict
+from datetime import date, datetime
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class AdminLoginIn(BaseModel):
@@ -19,14 +19,49 @@ class AdminUserOut(BaseModel):
     created_at: datetime
 
 
+_VALID_CONFIG_TYPES = {"keyword", "filters", "fanpage"}
+_VALID_ACTIVE_STATUS = {"all", "active", "inactive"}
+_VALID_MEDIA_TYPES = {"all", "image", "video", "meme"}
+
+
 class ParsingConfigIn(BaseModel):
-    keyword: str
+    keyword: str | None = None
     country: str
     vertical: str = "nutra"
     is_active: bool = True
     notes: str | None = None
     partner: str | None = None
     category: str | None = None
+    languages: list[str] | None = None
+    config_type: str = "keyword"
+    active_status: str | None = None
+    media_type_filter: str | None = None
+    platforms: list[str] | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    advertiser: str | None = None
+    auto_date_from_last_parse: bool = False
+
+    @field_validator("config_type")
+    @classmethod
+    def validate_config_type(cls, v: str) -> str:
+        if v not in _VALID_CONFIG_TYPES:
+            raise ValueError(f"config_type must be one of: {_VALID_CONFIG_TYPES}")
+        return v
+
+    @field_validator("active_status")
+    @classmethod
+    def validate_active_status(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_ACTIVE_STATUS:
+            raise ValueError(f"active_status must be one of: {_VALID_ACTIVE_STATUS}")
+        return v
+
+    @field_validator("media_type_filter")
+    @classmethod
+    def validate_media_type_filter(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_MEDIA_TYPES:
+            raise ValueError(f"media_type_filter must be one of: {_VALID_MEDIA_TYPES}")
+        return v
 
 
 ParsingConfigCreate = ParsingConfigIn
@@ -40,18 +75,57 @@ class ParsingConfigUpdate(BaseModel):
     notes: str | None = None
     partner: str | None = None
     category: str | None = None
+    languages: list[str] | None = None
+    config_type: str | None = None
+    active_status: str | None = None
+    media_type_filter: str | None = None
+    platforms: list[str] | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    advertiser: str | None = None
+    auto_date_from_last_parse: bool | None = None
+
+    @field_validator("config_type")
+    @classmethod
+    def validate_config_type(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_CONFIG_TYPES:
+            raise ValueError(f"config_type must be one of: {_VALID_CONFIG_TYPES}")
+        return v
+
+    @field_validator("active_status")
+    @classmethod
+    def validate_active_status(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_ACTIVE_STATUS:
+            raise ValueError(f"active_status must be one of: {_VALID_ACTIVE_STATUS}")
+        return v
+
+    @field_validator("media_type_filter")
+    @classmethod
+    def validate_media_type_filter(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_MEDIA_TYPES:
+            raise ValueError(f"media_type_filter must be one of: {_VALID_MEDIA_TYPES}")
+        return v
 
 
 class ParsingConfigOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    keyword: str
+    keyword: str | None
     country: str
     vertical: str
     is_active: bool
     notes: str | None
     partner: str | None = None
     category: str | None = None
+    languages: list[str] | None = None
+    config_type: str = "keyword"
+    active_status: str | None = None
+    media_type_filter: str | None = None
+    platforms: list[str] | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    advertiser: str | None = None
+    auto_date_from_last_parse: bool = False
     created_at: datetime
     updated_at: datetime
     ads_count: int = 0

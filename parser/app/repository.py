@@ -34,7 +34,7 @@ async def upsert_ad(
     session: AsyncSession,
     card: ParsedCard,
     country: str,
-    keyword: str,
+    keyword: str | None,
     vertical: str = "nutra",
 ) -> tuple[Ad, bool, bool]:
     """Returns (ad, is_new, skipped_moderated).

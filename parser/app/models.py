@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Enum as SAEnum, ForeignKey,
+    BigInteger, Boolean, Date, DateTime, Enum as SAEnum, ForeignKey,
     Index, Integer, String, Text, UniqueConstraint, JSON, func
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -41,7 +41,7 @@ class ParsingConfig(Base):
     __tablename__ = "parsing_configs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    keyword: Mapped[str] = mapped_column(String(255))
+    keyword: Mapped[str | None] = mapped_column(String(255), nullable=True)
     country: Mapped[str] = mapped_column(String(8))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -49,6 +49,16 @@ class ParsingConfig(Base):
     partner: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str | None] = mapped_column(Text, nullable=True)
     languages: Mapped[list | None] = mapped_column(ARRAY(String), nullable=True)
+
+    config_type: Mapped[str] = mapped_column(String(32), default="keyword")
+    active_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    media_type_filter: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    platforms: Mapped[list | None] = mapped_column(ARRAY(String), nullable=True)
+    date_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    date_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    advertiser: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    auto_date_from_last_parse: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

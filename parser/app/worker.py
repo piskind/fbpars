@@ -102,9 +102,26 @@ async def _upload_card_media(
 
 
 async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict:
-    url = build_library_url(config.country, config.keyword, config.languages)
+    # For auto_date_from_last_parse: use last_parsed_at as date_from if set
+    effective_date_from = config.date_from
+    if config.auto_date_from_last_parse and config.last_parsed_at:
+        effective_date_from = config.last_parsed_at.date()
+
+    url = build_library_url(
+        config.country,
+        config.keyword,
+        config.languages,
+        active_status=config.active_status or "all",
+        media_type=config.media_type_filter or "all",
+        platforms=config.platforms,
+        date_from=effective_date_from,
+        date_to=config.date_to,
+        advertiser=config.advertiser,
+    )
+    kw_tag = config.keyword or "(no keyword)"
     lang_tag = f" lang={config.languages}" if config.languages else ""
-    logger.info(f"[#{config.id}] {config.keyword}/{config.country}{lang_tag} → {url}")
+    type_tag = f" [{config.config_type}]"
+    logger.info(f"[#{config.id}]{type_tag} {kw_tag}/{config.country}{lang_tag} → {url}")
 
     stats = {
         "raw": 0,
@@ -132,8 +149,10 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
                 return stats
 
             await asyncio.sleep(5)
+            # filters/fanpage configs browse broadly — cap scrolls lower; MAX_CARDS=300 is the hard limit
+            max_scrolls = 40 if config.config_type in ("filters", "fanpage") else 80
             raw_cards = await asyncio.wait_for(
-                scroll_and_collect(page, max_scrolls=80, stable_rounds=7),
+                scroll_and_collect(page, max_scrolls=max_scrolls, stable_rounds=7),
                 timeout=600,  # 10 min hard ceiling — prevents hang when browser is OOM-killed
             )
             stats["raw"] = len(raw_cards)
@@ -200,6 +219,13 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
     except Exception as e:
         logger.error(f"[#{config.id}] Fatal error: {e}")
         stats["errors"] += 1
+
+    # Always stamp last_parsed_at so auto_date_from_last_parse advances on next run
+    async with AsyncSessionLocal() as session:
+        cfg = await session.get(ParsingConfig, config.id)
+        if cfg:
+            cfg.last_parsed_at = datetime.now(timezone.utc)
+            await session.commit()
 
     logger.info(f"[#{config.id}] DONE: {stats}")
     return stats

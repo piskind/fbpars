@@ -12,6 +12,32 @@ from app.schemas import ParsingConfigOut, ParsingConfigCreate, ParsingConfigUpda
 router = APIRouter(prefix="/api/configs", tags=["configs"])
 
 
+def _config_out(cfg: ParsingConfig, ads_count: int = 0, last_parsed_at: datetime | None = None) -> ParsingConfigOut:
+    return ParsingConfigOut(
+        id=cfg.id,
+        keyword=cfg.keyword,
+        country=cfg.country,
+        vertical=cfg.vertical,
+        is_active=cfg.is_active,
+        notes=cfg.notes,
+        partner=cfg.partner,
+        category=cfg.category,
+        languages=cfg.languages,
+        config_type=cfg.config_type,
+        active_status=cfg.active_status,
+        media_type_filter=cfg.media_type_filter,
+        platforms=cfg.platforms,
+        date_from=cfg.date_from,
+        date_to=cfg.date_to,
+        advertiser=cfg.advertiser,
+        auto_date_from_last_parse=cfg.auto_date_from_last_parse,
+        created_at=cfg.created_at,
+        updated_at=cfg.updated_at,
+        ads_count=ads_count,
+        last_parsed_at=last_parsed_at,
+    )
+
+
 @router.get("", response_model=list[ParsingConfigOut])
 async def list_configs(
     session: AsyncSession = Depends(get_session),
@@ -35,22 +61,7 @@ async def list_configs(
     result = []
     for c in configs:
         cnt, last = stats.get((c.country, c.keyword), (0, None))
-        result.append(
-            ParsingConfigOut(
-                id=c.id,
-                keyword=c.keyword,
-                country=c.country,
-                vertical=c.vertical,
-                is_active=c.is_active,
-                notes=c.notes,
-                partner=c.partner,
-                category=c.category,
-                created_at=c.created_at,
-                updated_at=c.updated_at,
-                ads_count=cnt,
-                last_parsed_at=last,
-            )
-        )
+        result.append(_config_out(c, ads_count=cnt, last_parsed_at=last))
     return result
 
 
@@ -68,24 +79,20 @@ async def create_config(
         notes=body.notes,
         partner=body.partner,
         category=body.category,
+        languages=body.languages,
+        config_type=body.config_type,
+        active_status=body.active_status,
+        media_type_filter=body.media_type_filter,
+        platforms=body.platforms,
+        date_from=body.date_from,
+        date_to=body.date_to,
+        advertiser=body.advertiser,
+        auto_date_from_last_parse=body.auto_date_from_last_parse,
     )
     session.add(cfg)
     await session.commit()
     await session.refresh(cfg)
-    return ParsingConfigOut(
-        id=cfg.id,
-        keyword=cfg.keyword,
-        country=cfg.country,
-        vertical=cfg.vertical,
-        is_active=cfg.is_active,
-        notes=cfg.notes,
-        partner=cfg.partner,
-        category=cfg.category,
-        created_at=cfg.created_at,
-        updated_at=cfg.updated_at,
-        ads_count=0,
-        last_parsed_at=None,
-    )
+    return _config_out(cfg)
 
 
 @router.patch("/{cfg_id}", response_model=ParsingConfigOut)
@@ -113,29 +120,34 @@ async def update_config(
         cfg.partner = body.partner
     if body.category is not None:
         cfg.category = body.category
+    if body.languages is not None:
+        cfg.languages = body.languages
+    if body.config_type is not None:
+        cfg.config_type = body.config_type
+    if body.active_status is not None:
+        cfg.active_status = body.active_status
+    if body.media_type_filter is not None:
+        cfg.media_type_filter = body.media_type_filter
+    if body.platforms is not None:
+        cfg.platforms = body.platforms
+    if body.date_from is not None:
+        cfg.date_from = body.date_from
+    if body.date_to is not None:
+        cfg.date_to = body.date_to
+    if body.advertiser is not None:
+        cfg.advertiser = body.advertiser
+    if body.auto_date_from_last_parse is not None:
+        cfg.auto_date_from_last_parse = body.auto_date_from_last_parse
 
     await session.commit()
     await session.refresh(cfg)
 
-    cnt_stmt = select(func.count(Ad.id), func.max(Ad.first_seen_at)).where(
+    cnt_stmt = select(func.count(Ad.id), func.max(Ad.last_seen_at)).where(
         Ad.country == cfg.country, Ad.keyword == cfg.keyword
     )
     row = (await session.execute(cnt_stmt)).one()
 
-    return ParsingConfigOut(
-        id=cfg.id,
-        keyword=cfg.keyword,
-        country=cfg.country,
-        vertical=cfg.vertical,
-        is_active=cfg.is_active,
-        notes=cfg.notes,
-        partner=cfg.partner,
-        category=cfg.category,
-        created_at=cfg.created_at,
-        updated_at=cfg.updated_at,
-        ads_count=row[0] or 0,
-        last_parsed_at=row[1],
-    )
+    return _config_out(cfg, ads_count=row[0] or 0, last_parsed_at=row[1])
 
 
 @router.delete("/{cfg_id}")
