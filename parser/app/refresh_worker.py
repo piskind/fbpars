@@ -248,6 +248,9 @@ def _parse_eu_reach(text: str, library_id: str, dom_data: dict | None = None) ->
         return None
 
     breakdown = _build_breakdown(text, dom_data)
+    if breakdown is None:
+        # Regex caught a stray number but no EU tables parsed — not an EU creative
+        return None
     return {"reach": reach, "breakdown": breakdown}
 
 
