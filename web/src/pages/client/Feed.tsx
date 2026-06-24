@@ -42,6 +42,7 @@ type Filters = {
   daysMax: string
   vertical: string
   sort: string
+  isActive: string
   // Ad settings card
   mediaType: string
   cta: string
@@ -67,6 +68,7 @@ const emptyFilters: Filters = {
   daysMax: '',
   vertical: '',
   sort: 'newest',
+  isActive: '',
   mediaType: '',
   cta: '',
   platforms: [],
@@ -314,6 +316,7 @@ export function ClientFeedPage() {
     if (applied.ecomPlatform) p.set('ecom_platform', applied.ecomPlatform)
     if (applied.ipQuery) p.set('ip', applied.ipQuery)
     if (applied.language) p.set('language', applied.language)
+    if (applied.isActive) p.set('is_active', applied.isActive)
     return p
   }, [applied])
 
@@ -462,6 +465,22 @@ export function ClientFeedPage() {
                   <option value="oldest">Сначала старые</option>
                   <option value="days_desc">Дольше крутят</option>
                   <option value="days_asc">Меньше крутят</option>
+                </select>
+                <ChevronDown className="absolute right-2.5 top-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Активность</label>
+              <div className="relative">
+                <select
+                  value={draft.isActive}
+                  onChange={(e) => set({ isActive: e.target.value })}
+                  className="appearance-none px-3 py-2 pr-8 border rounded-lg text-sm bg-white"
+                >
+                  <option value="">Все</option>
+                  <option value="true">Активные</option>
+                  <option value="false">Неактивные</option>
                 </select>
                 <ChevronDown className="absolute right-2.5 top-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
               </div>
