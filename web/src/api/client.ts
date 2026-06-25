@@ -37,7 +37,8 @@ export const api = adminApi
 
 export type Config = {
   id: number
-  keyword: string
+  config_type: 'keyword' | 'filters' | 'fanpage'
+  keyword: string | null
   country: string
   vertical: string
   is_active: boolean
@@ -48,6 +49,14 @@ export type Config = {
   updated_at: string
   ads_count: number
   last_parsed_at: string | null
+  active_status: string | null
+  media_type_filter: string | null
+  platforms: string[] | null
+  date_from: string | null
+  date_to: string | null
+  advertiser: string | null
+  auto_date_from_last_parse: boolean
+  languages: string[] | null
 }
 
 export type Creative = {
