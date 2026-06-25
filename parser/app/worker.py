@@ -17,7 +17,10 @@ from app.proxy import rotate_ip, current_ip
 MEDIA_SEMAPHORE = asyncio.Semaphore(10)
 
 
-async def get_active_configs(session) -> list[ParsingConfig]:
+async def get_active_configs(session, config_id: int | None = None) -> list[ParsingConfig]:
+    if config_id is not None:
+        cfg = await session.get(ParsingConfig, config_id)
+        return [cfg] if cfg else []
     stmt = select(ParsingConfig).where(ParsingConfig.is_active.is_(True)).order_by(ParsingConfig.id)
     return list((await session.execute(stmt)).scalars().all())
 
@@ -231,16 +234,20 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
     return stats
 
 
-async def run_once(limit: int | None = None) -> None:
+async def run_once(limit: int | None = None, config_id: int | None = None) -> None:
     ip = await current_ip()
     logger.info(f"Starting worker. Current IP: {ip}")
 
     async with AsyncSessionLocal() as session:
-        configs = await get_active_configs(session)
+        configs = await get_active_configs(session, config_id=config_id)
+
+    if not configs and config_id is not None:
+        logger.error(f"Config #{config_id} not found")
+        return
 
     if limit:
         configs = configs[:limit]
-    logger.info(f"Loaded {len(configs)} active configs")
+    logger.info(f"Loaded {len(configs)} config(s){f' (single: #{config_id})' if config_id else ''}")
 
     uploader = MediaUploader()
     total = {
@@ -264,6 +271,11 @@ async def run_once(limit: int | None = None) -> None:
 
 
 if __name__ == "__main__":
-    import sys
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    asyncio.run(run_once(limit))
+    import argparse
+    parser = argparse.ArgumentParser(description="Run parser worker")
+    parser.add_argument("limit", nargs="?", type=int, default=None,
+                        help="Max number of active configs to process (positional)")
+    parser.add_argument("--config-id", type=int, default=None,
+                        help="Run a single config by ID (ignores is_active)")
+    args = parser.parse_args()
+    asyncio.run(run_once(limit=args.limit, config_id=args.config_id))
