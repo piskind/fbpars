@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../api/client'
 import type { Config } from '../api/client'
 
@@ -42,6 +43,36 @@ function filterLines(c: Config): string[] {
     lines.push(`Даты: ${c.date_from || '…'} — ${c.date_to || '…'}`)
   }
   return lines
+}
+
+// ---------------------------------------------------------------------------
+// Filters popup (portal — avoids overflow:hidden clipping by table container)
+// ---------------------------------------------------------------------------
+function FilterPopup({ id, top, left, lines, onClose }: {
+  id: number; top: number; left: number; lines: string[]; onClose: () => void
+}) {
+  return createPortal(
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div
+        className="fixed z-50 bg-white border rounded-lg shadow-lg p-3 min-w-[220px]"
+        style={{ top, left }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-xs font-medium text-gray-400 mb-1.5">Конфиг #{id}</div>
+        {lines.length > 0 ? (
+          <ul className="space-y-1">
+            {lines.map((line) => (
+              <li key={line} className="text-xs text-gray-700 whitespace-nowrap">{line}</li>
+            ))}
+          </ul>
+        ) : (
+          <span className="text-xs text-gray-400">без фильтров</span>
+        )}
+      </div>
+    </>,
+    document.body,
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +313,7 @@ export default function ConfigsPage() {
   const qc = useQueryClient()
   const [activeTab, setActiveTab] = useState<ActiveTab>('keyword')
   const [editingConfig, setEditingConfig] = useState<Config | null>(null)
-  const [openFilterPopupId, setOpenFilterPopupId] = useState<number | null>(null)
+  const [filterPopup, setFilterPopup] = useState<{ id: number; top: number; left: number; lines: string[] } | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['configs'],
@@ -424,6 +455,15 @@ export default function ConfigsPage() {
     <div>
       {editingConfig && (
         <EditModal config={editingConfig} onClose={() => setEditingConfig(null)} />
+      )}
+      {filterPopup && (
+        <FilterPopup
+          id={filterPopup.id}
+          top={filterPopup.top}
+          left={filterPopup.left}
+          lines={filterPopup.lines}
+          onClose={() => setFilterPopup(null)}
+        />
       )}
 
       <h1 className="text-2xl font-bold mb-6">Парсинг</h1>
@@ -637,33 +677,16 @@ export default function ConfigsPage() {
                 <td className="px-4 py-3 text-sm text-gray-500">{c.category || '—'}</td>
                 <td className="px-4 py-3 text-sm">
                   {c.config_type === 'filters' ? (
-                    <div className="relative inline-block">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setOpenFilterPopupId(openFilterPopupId === c.id ? null : c.id)
-                        }}
-                        className="text-blue-600 hover:underline"
-                      >
-                        Фильтры
-                      </button>
-                      {openFilterPopupId === c.id && (
-                        <>
-                          <div className="fixed inset-0 z-10" onClick={() => setOpenFilterPopupId(null)} />
-                          <div className="absolute left-0 top-full mt-1 z-20 bg-white border rounded-lg shadow-lg p-3 min-w-[220px] whitespace-nowrap">
-                            {filterLines(c).length > 0 ? (
-                              <ul className="space-y-1">
-                                {filterLines(c).map((line) => (
-                                  <li key={line} className="text-xs text-gray-700">{line}</li>
-                                ))}
-                              </ul>
-                            ) : (
-                              <span className="text-xs text-gray-400">без фильтров</span>
-                            )}
-                          </div>
-                        </>
-                      )}
-                    </div>
+                    <button
+                      onClick={(e) => {
+                        if (filterPopup?.id === c.id) { setFilterPopup(null); return }
+                        const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                        setFilterPopup({ id: c.id, top: rect.bottom + 4, left: rect.left, lines: filterLines(c) })
+                      }}
+                      className="text-blue-600 hover:underline"
+                    >
+                      Фильтры
+                    </button>
                   ) : (
                     <span className="text-gray-300">—</span>
                   )}
