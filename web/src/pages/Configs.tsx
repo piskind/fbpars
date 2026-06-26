@@ -16,6 +16,14 @@ const VERTICALS = [
 
 const PLATFORMS = ['facebook', 'instagram', 'messenger', 'audience_network']
 
+const FB_AD_TYPES = [
+  { value: 'all', label: 'Все объявления' },
+  { value: 'employment_ads', label: 'Трудоустройство' },
+  { value: 'housing_ads', label: 'Жильё' },
+  { value: 'financial_products_and_services_ads', label: 'Финансы и кредиты' },
+  { value: 'political_and_issue_ads', label: 'Политика и социальные вопросы' },
+]
+
 const IC = 'px-3 py-2 border rounded-lg text-sm'
 
 function verticalLabel(v: string): string {
@@ -275,6 +283,10 @@ function EditModal({ config, onClose }: { config: Config; onClose: () => void })
                   <label className="flex items-center gap-2 text-sm cursor-pointer">
                     <input type="checkbox" checked={eAutoDate} onChange={(e) => setEAutoDate(e.target.checked)} className="rounded" />
                     с момента последнего парсинга
+                    <span
+                      title="При следующем запуске парсер выкачает не весь период заново, а только новые даты с момента последнего парсинга — чтобы не дублировать уже собранное"
+                      className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 text-gray-500 text-xs cursor-help select-none"
+                    >?</span>
                   </label>
                 </div>
               </div>
@@ -354,9 +366,8 @@ export default function ConfigsPage() {
 
   // --- Filters form state ---
   const [fCountry, setFCountry] = useState('')
-  const [fCategory, setFCategory] = useState('')
+  const [fCategory, setFCategory] = useState('all')
   const [fKeyword, setFKeyword] = useState('')
-  const [fVertical, setFVertical] = useState('nutra')
   const [fLanguages, setFLanguages] = useState('')
   const [fAdvertiser, setFAdvertiser] = useState('')
   const [fPlatforms, setFPlatforms] = useState<string[]>([])
@@ -372,9 +383,8 @@ export default function ConfigsPage() {
       const payload: Record<string, unknown> = {
         config_type: 'filters',
         country: fCountry,
-        vertical: fVertical,
         keyword: fKeyword.trim() || null,
-        category: fCategory || null,
+        category: fCategory !== 'all' ? fCategory : null,
         is_active: true,
       }
       if (fLanguages.trim()) {
@@ -394,9 +404,8 @@ export default function ConfigsPage() {
     },
     onSuccess: () => {
       setFCountry('')
-      setFCategory('')
+      setFCategory('all')
       setFKeyword('')
-      setFVertical('nutra')
       setFLanguages('')
       setFAdvertiser('')
       setFPlatforms([])
@@ -536,19 +545,15 @@ export default function ConfigsPage() {
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Категория</label>
-              <input value={fCategory} onChange={(e) => setFCategory(e.target.value)} placeholder="необязательно" className={IC} />
+              <select value={fCategory} onChange={(e) => setFCategory(e.target.value)} className={IC}>
+                {FB_AD_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>{t.label}</option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Ключ</label>
               <input value={fKeyword} onChange={(e) => setFKeyword(e.target.value)} placeholder="невидимый пробел по умолчанию" className={`${IC} w-56`} />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Вертикаль</label>
-              <select value={fVertical} onChange={(e) => setFVertical(e.target.value)} className={IC}>
-                {VERTICALS.map((v) => (
-                  <option key={v.value} value={v.value}>{v.label}</option>
-                ))}
-              </select>
             </div>
           </div>
 
@@ -611,6 +616,10 @@ export default function ConfigsPage() {
                   <label className="flex items-center gap-2 text-sm cursor-pointer">
                     <input type="checkbox" checked={fAutoDate} onChange={(e) => setFAutoDate(e.target.checked)} className="rounded" />
                     с момента последнего парсинга
+                    <span
+                      title="При следующем запуске парсер выкачает не весь период заново, а только новые даты с момента последнего парсинга — чтобы не дублировать уже собранное"
+                      className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 text-gray-500 text-xs cursor-help select-none"
+                    >?</span>
                   </label>
                 </div>
               </div>

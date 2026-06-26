@@ -123,13 +123,14 @@ def build_library_url(
     date_from=None,
     date_to=None,
     advertiser: str | None = None,
+    ad_type: str = "all",
 ) -> str:
     from urllib.parse import quote
     # Braille blank U+2800 — invisible keyword that returns broad results
     q = quote(keyword) if keyword else "%E2%A0%80"
     url = (
         "https://www.facebook.com/ads/library/"
-        f"?active_status={active_status}&ad_type=all&country={country}"
+        f"?active_status={active_status}&ad_type={ad_type}&country={country}"
         f"&q={q}&search_type=keyword_unordered&media_type={media_type}"
     )
     for i, lang in enumerate(languages or []):

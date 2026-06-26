@@ -110,6 +110,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
     if config.auto_date_from_last_parse and config.last_parsed_at:
         effective_date_from = config.last_parsed_at.date()
 
+    ad_type = (config.category or "all") if config.config_type in ("filters", "fanpage") else "all"
     url = build_library_url(
         config.country,
         config.keyword,
@@ -120,6 +121,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
         date_from=effective_date_from,
         date_to=config.date_to,
         advertiser=config.advertiser,
+        ad_type=ad_type,
     )
     kw_tag = config.keyword or "(no keyword)"
     lang_tag = f" lang={config.languages}" if config.languages else ""
