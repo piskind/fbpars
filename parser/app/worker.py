@@ -186,7 +186,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
             async with AsyncSessionLocal() as session:
                 try:
                     ad, is_new, skipped = await upsert_ad(
-                        session, card, config.country, config.keyword, config.vertical
+                        session, card, config.country, config.keyword, config.vertical, config.config_type
                     )
                     await session.commit()
                     if is_new:

@@ -36,6 +36,7 @@ async def upsert_ad(
     country: str,
     keyword: str | None,
     vertical: str = "nutra",
+    config_type: str = "keyword",
 ) -> tuple[Ad, bool, bool]:
     """Returns (ad, is_new, skipped_moderated).
 
@@ -135,7 +136,8 @@ async def upsert_ad(
     )
     session.add(ad)
     await session.flush()
-    moderation = ModerationEntry(ad_id=ad.id, status=ModerationStatus.PENDING)
+    mod_status = ModerationStatus.APPROVED if config_type in ("filters", "fanpage") else ModerationStatus.PENDING
+    moderation = ModerationEntry(ad_id=ad.id, status=mod_status)
     session.add(moderation)
     await session.flush()
     return ad, True, False
