@@ -28,6 +28,22 @@ function configTypeLabel(t: string): string {
   return t
 }
 
+function filterLines(c: Config): string[] {
+  const lines: string[] = []
+  if (c.languages?.length) lines.push(`Язык: ${c.languages.join(', ')}`)
+  if (c.advertiser) lines.push(`Рекламодатель: ${c.advertiser}`)
+  if (c.platforms?.length) lines.push(`Платформы: ${c.platforms.join(', ')}`)
+  if (c.media_type_filter && c.media_type_filter !== 'all') lines.push(`Тип медиа: ${c.media_type_filter}`)
+  if (c.active_status && c.active_status !== 'all') lines.push(`Статус: ${c.active_status}`)
+  if (c.auto_date_from_last_parse) {
+    const to = c.date_to ? ` — ${c.date_to}` : ''
+    lines.push(`Даты: с последнего парсинга${to}`)
+  } else if (c.date_from || c.date_to) {
+    lines.push(`Даты: ${c.date_from || '…'} — ${c.date_to || '…'}`)
+  }
+  return lines
+}
+
 // ---------------------------------------------------------------------------
 // Edit modal
 // ---------------------------------------------------------------------------
@@ -266,6 +282,7 @@ export default function ConfigsPage() {
   const qc = useQueryClient()
   const [activeTab, setActiveTab] = useState<ActiveTab>('keyword')
   const [editingConfig, setEditingConfig] = useState<Config | null>(null)
+  const [openFilterPopupId, setOpenFilterPopupId] = useState<number | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['configs'],
@@ -592,6 +609,7 @@ export default function ConfigsPage() {
               <th className="text-left px-4 py-3 text-sm">Вертикаль</th>
               <th className="text-left px-4 py-3 text-sm">Партнёр</th>
               <th className="text-left px-4 py-3 text-sm">Категория</th>
+              <th className="text-left px-4 py-3 text-sm">Фильтры</th>
               <th className="text-left px-4 py-3 text-sm">Спарсено</th>
               <th className="text-left px-4 py-3 text-sm">Последний парсинг</th>
               <th className="text-left px-4 py-3 text-sm">Активен</th>
@@ -617,6 +635,39 @@ export default function ConfigsPage() {
                 </td>
                 <td className="px-4 py-3 text-sm text-gray-500">{c.partner || '—'}</td>
                 <td className="px-4 py-3 text-sm text-gray-500">{c.category || '—'}</td>
+                <td className="px-4 py-3 text-sm">
+                  {c.config_type === 'filters' ? (
+                    <div className="relative inline-block">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setOpenFilterPopupId(openFilterPopupId === c.id ? null : c.id)
+                        }}
+                        className="text-blue-600 hover:underline"
+                      >
+                        Фильтры
+                      </button>
+                      {openFilterPopupId === c.id && (
+                        <>
+                          <div className="fixed inset-0 z-10" onClick={() => setOpenFilterPopupId(null)} />
+                          <div className="absolute left-0 top-full mt-1 z-20 bg-white border rounded-lg shadow-lg p-3 min-w-[220px] whitespace-nowrap">
+                            {filterLines(c).length > 0 ? (
+                              <ul className="space-y-1">
+                                {filterLines(c).map((line) => (
+                                  <li key={line} className="text-xs text-gray-700">{line}</li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <span className="text-xs text-gray-400">без фильтров</span>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-gray-300">—</span>
+                  )}
+                </td>
                 <td className="px-4 py-3 text-sm">
                   {c.ads_count > 0 ? c.ads_count : <span className="text-gray-300">—</span>}
                 </td>
