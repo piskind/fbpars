@@ -131,14 +131,9 @@ function EditModal({ config, onClose }: { config: Config; onClose: () => void })
         payload.platforms = ePlatforms.length > 0 ? ePlatforms : null
         payload.media_type_filter = eMediaType !== 'all' ? eMediaType : null
         payload.active_status = eActiveStatus !== 'all' ? eActiveStatus : null
-        payload.date_to = eDateTo || null
-        if (eAutoDate) {
-          payload.auto_date_from_last_parse = true
-          payload.date_from = null
-        } else {
-          payload.auto_date_from_last_parse = false
-          payload.date_from = eDateFrom || null
-        }
+        payload.date_from = eDateFrom || null
+        payload.auto_date_from_last_parse = eAutoDate
+        payload.date_to = eAutoDate ? null : (eDateTo || null)
       }
       await api.patch(`/configs/${config.id}`, payload)
     },
@@ -273,11 +268,11 @@ function EditModal({ config, onClose }: { config: Config; onClose: () => void })
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Показы с</label>
-                  <input type="date" value={eDateFrom} onChange={(e) => setEDateFrom(e.target.value)} disabled={eAutoDate} className={`${IC} disabled:opacity-40`} />
+                  <input type="date" value={eDateFrom} onChange={(e) => setEDateFrom(e.target.value)} className={IC} />
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Показы по</label>
-                  <input type="date" value={eDateTo} onChange={(e) => setEDateTo(e.target.value)} className={IC} />
+                  <input type="date" value={eDateTo} onChange={(e) => setEDateTo(e.target.value)} disabled={eAutoDate} className={`${IC} disabled:opacity-40`} />
                 </div>
                 <div className="flex items-end pb-1">
                   <label className="flex items-center gap-2 text-sm cursor-pointer">
@@ -394,12 +389,9 @@ export default function ConfigsPage() {
       if (fPlatforms.length > 0) payload.platforms = fPlatforms
       if (fMediaType !== 'all') payload.media_type_filter = fMediaType
       if (fActiveStatus !== 'all') payload.active_status = fActiveStatus
-      if (fDateTo) payload.date_to = fDateTo
-      if (fAutoDate) {
-        payload.auto_date_from_last_parse = true
-      } else if (fDateFrom) {
-        payload.date_from = fDateFrom
-      }
+      payload.date_from = fDateFrom || null
+      payload.auto_date_from_last_parse = fAutoDate
+      if (!fAutoDate && fDateTo) payload.date_to = fDateTo
       await api.post('/configs', payload)
     },
     onSuccess: () => {
@@ -606,11 +598,11 @@ export default function ConfigsPage() {
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Показы с</label>
-                  <input type="date" value={fDateFrom} onChange={(e) => setFDateFrom(e.target.value)} disabled={fAutoDate} className={`${IC} disabled:opacity-40`} />
+                  <input type="date" value={fDateFrom} onChange={(e) => setFDateFrom(e.target.value)} className={IC} />
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Показы по</label>
-                  <input type="date" value={fDateTo} onChange={(e) => setFDateTo(e.target.value)} className={IC} />
+                  <input type="date" value={fDateTo} onChange={(e) => setFDateTo(e.target.value)} disabled={fAutoDate} className={`${IC} disabled:opacity-40`} />
                 </div>
                 <div className="flex items-end pb-1">
                   <label className="flex items-center gap-2 text-sm cursor-pointer">
