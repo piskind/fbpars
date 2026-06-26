@@ -15,7 +15,9 @@ from app.proxy import rotate_ip
 _SPEND_CPM = float(os.getenv("SPEND_CPM", "12"))
 
 
-BATCH_SIZE = 500  # max active ads per daily run; None = unlimited
+BATCH_SIZE = 500   # max active ads per daily run; None = unlimited
+GROUP_SIZE = 3     # ads processed in parallel per browser context
+GROUP_SLEEP = 10   # seconds between groups (anti-ban pause)
 
 # JS: find the external landing URL on the ?id= page.
 # Works for both active (CTA button present) and inactive (URL may be in data attrs).
@@ -258,17 +260,20 @@ def _build_ad_url(library_id: str) -> str:
     return f"https://www.facebook.com/ads/library/?id={library_id}&country=DE"
 
 
-async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | None, dict | None]:
-    """
-    Opens a fresh browser context, loads the ?id= page.
-    Returns (card_result, found_url) where:
+async def _process_one_page(
+    context,
+    library_id: str,
+) -> tuple[str | bool | None, str | None, dict | None]:
+    """Open one page in an existing browser context and check the ad.
+
+    Returns (card_result, found_url, reach_data) where:
       card_result: str = card innerText | False = page OK but no card | None = couldn't verify
       found_url:   str = external landing URL found on page | None = not found
-    One visit does both: status check AND link enrichment.
+      reach_data:  EU reach dict or None
     """
     url = _build_ad_url(library_id)
-    async with browser_context() as context:
-        page = await context.new_page()
+    page = await context.new_page()
+    try:
         try:
             ok = await goto_with_challenge_retry(page, url, max_attempts=4, base_wait=6)
         except Exception as e:
@@ -282,7 +287,8 @@ async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | Non
         await asyncio.sleep(2)
 
         try:
-            await page.wait_for_load_state("networkidle", timeout=10_000)
+            # Reduced from 10 000 — page already loaded after domcontentloaded+sleep
+            await page.wait_for_load_state("networkidle", timeout=4_000)
         except Exception:
             pass
 
@@ -299,7 +305,8 @@ async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | Non
             }}
         """
         try:
-            card_result = await asyncio.wait_for(page.evaluate(_card_script), timeout=20)
+            # Reduced from 20s — JS is synchronous DOM traversal, 10s is plenty
+            card_result = await asyncio.wait_for(page.evaluate(_card_script), timeout=10)
         except asyncio.TimeoutError:
             logger.warning(f"[refresh] {library_id}: evaluate timeout → skip")
             return None, None, None
@@ -344,16 +351,20 @@ async def _load_card_text(library_id: str) -> tuple[str | bool | None, str | Non
             return None, None, None
 
         return False, found_url, reach_data
+    finally:
+        await page.close()
 
 
-async def _check_ad_on_fb(library_id: str) -> tuple[bool | None, str | None, dict | None]:
-    """
+async def _check_ad_in_context(
+    context,
+    library_id: str,
+) -> tuple[bool | None, str | None, dict | None]:
+    """Check one ad using an existing browser context (opens/closes its own tab).
+
     Returns (is_active, found_url, reach_data):
       is_active:  True = active | False = genuinely gone | None = couldn't verify
-      found_url:  external landing URL extracted from the page, or None
-      reach_data: {"reach": int, "breakdown": dict|None} from EU transparency section, or None
     """
-    card_text, found_url, reach_data = await _load_card_text(library_id)
+    card_text, found_url, reach_data = await _process_one_page(context, library_id)
 
     if card_text is None:
         return None, None, None
@@ -366,11 +377,12 @@ async def _check_ad_on_fb(library_id: str) -> tuple[bool | None, str | None, dic
             logger.warning(f"[refresh] {library_id}: parse error {e}")
             return None, found_url, reach_data
 
-    # Card not found on first attempt — retry once to rule out transient proxy disruption
+    # Card not found on first attempt — retry once to rule out transient proxy disruption.
+    # asyncio.sleep here is non-blocking: the other coroutines in the group already finished.
     logger.warning(f"[refresh] {library_id}: card not found on first attempt, retrying in 15s")
     await asyncio.sleep(15)
 
-    card_text2, found_url2, reach_data2 = await _load_card_text(library_id)
+    card_text2, found_url2, reach_data2 = await _process_one_page(context, library_id)
 
     if card_text2 is None:
         return None, None, None
@@ -385,6 +397,29 @@ async def _check_ad_on_fb(library_id: str) -> tuple[bool | None, str | None, dic
 
     logger.info(f"[refresh] {library_id}: card not found after retry → INACTIVE")
     return False, found_url2 or found_url, reach_data2 or reach_data
+
+
+async def _process_group(
+    ads: list[Ad],
+) -> list[tuple[Ad, bool | None, str | None, dict | None, bool]]:
+    """Open one browser context and check GROUP_SIZE ads in parallel (one tab each).
+
+    Returns list of (ad, is_active, found_url, reach_data, is_error).
+    """
+    async with browser_context() as context:
+        raw = await asyncio.gather(
+            *[_check_ad_in_context(context, ad.library_id) for ad in ads],
+            return_exceptions=True,
+        )
+
+    out = []
+    for ad, r in zip(ads, raw):
+        if isinstance(r, Exception):
+            logger.error(f"[refresh] {ad.library_id}: group task error: {r}")
+            out.append((ad, None, None, None, True))
+        else:
+            out.append((ad, *r, False))
+    return out
 
 
 async def _get_active_ads(session, limit: int | None) -> list[Ad]:
@@ -416,71 +451,78 @@ async def refresh_batch(limit: int | None = BATCH_SIZE) -> dict:
     async with AsyncSessionLocal() as session:
         ads = await _get_active_ads(session, limit)
 
-    logger.info(f"[refresh] Starting batch of {len(ads)} active ads")
+    groups = [ads[i:i + GROUP_SIZE] for i in range(0, len(ads), GROUP_SIZE)]
+    logger.info(
+        f"[refresh] Starting batch of {len(ads)} active ads "
+        f"({len(groups)} groups × {GROUP_SIZE})"
+    )
 
-    for i, ad in enumerate(ads, 1):
-        library_id = ad.library_id
-        logger.info(f"[refresh] [{i}/{len(ads)}] checking {library_id}")
+    for g_idx, group in enumerate(groups, 1):
+        ids = [a.library_id for a in group]
+        logger.info(f"[refresh] Group [{g_idx}/{len(groups)}]: {ids}")
 
         try:
-            is_active, found_url, reach_data = await _check_ad_on_fb(library_id)
+            results = await _process_group(group)
         except Exception as e:
-            logger.error(f"[refresh] {library_id}: unexpected error {e}")
-            is_active, found_url, reach_data = None, None, None
-            stats["errors"] += 1
-        stats["checked"] += 1
+            logger.error(f"[refresh] Group {g_idx} fatal: {e}")
+            results = [(ad, None, None, None, True) for ad in group]
 
-        try:
-            async with AsyncSessionLocal() as session:
-                db_ad = await session.get(Ad, ad.id)
-                if not db_ad:
-                    continue
+        for ad, is_active, found_url, reach_data, is_error in results:
+            stats["checked"] += 1
+            if is_error:
+                stats["errors"] += 1
 
-                db_ad.last_refresh_at = now
+            try:
+                async with AsyncSessionLocal() as session:
+                    db_ad = await session.get(Ad, ad.id)
+                    if not db_ad:
+                        continue
 
-                if is_active is None:
-                    stats["unknown"] += 1
-                elif is_active:
-                    db_ad.last_seen_at = now
-                    db_ad.days_active = _compute_days_active(db_ad, now)
-                    stats["still_active"] += 1
-                else:
-                    db_ad.is_active = False
-                    db_ad.days_active = _compute_days_active(db_ad, now)
-                    stats["deactivated"] += 1
-                    logger.info(f"[refresh] {library_id}: marked INACTIVE")
+                    db_ad.last_refresh_at = now
 
-                if found_url and not db_ad.link_url:
-                    db_ad.link_url = found_url
-                    stats["url_enriched"] += 1
-                    logger.info(f"[refresh] {library_id}: link_url enriched → {found_url}")
-
-                if reach_data and reach_data.get("reach"):
-                    reach_val = reach_data["reach"]
-                    if reach_val > 100_000_000 or str(reach_val) == library_id:
-                        logger.warning(f"[refresh] {library_id}: suspicious reach={reach_val} — skipped")
+                    if is_active is None:
+                        stats["unknown"] += 1
+                    elif is_active:
+                        db_ad.last_seen_at = now
+                        db_ad.days_active = _compute_days_active(db_ad, now)
+                        stats["still_active"] += 1
                     else:
-                        db_ad.reach = reach_val
-                        breakdown = reach_data.get("breakdown")
-                        db_ad.reach_breakdown = breakdown
-                        targeting = (breakdown or {}).get("targeting") or {}
-                        db_ad.eu_countries = targeting.get("countries_included") or None
-                        db_ad.spend_estimate = int(reach_val * _SPEND_CPM / 1000)
-                        stats["reach_updated"] += 1
-                        logger.info(f"[refresh] {library_id}: reach={reach_val}")
+                        db_ad.is_active = False
+                        db_ad.days_active = _compute_days_active(db_ad, now)
+                        stats["deactivated"] += 1
+                        logger.info(f"[refresh] {ad.library_id}: marked INACTIVE")
 
-                await session.commit()
-        except Exception as e:
-            logger.error(f"[refresh] {library_id}: DB write error — skipping: {e}")
-            stats["errors"] += 1
+                    if found_url and not db_ad.link_url:
+                        db_ad.link_url = found_url
+                        stats["url_enriched"] += 1
+                        logger.info(f"[refresh] {ad.library_id}: link_url enriched → {found_url}")
 
-        if i < len(ads):
-            if i % 5 == 0:
+                    if reach_data and reach_data.get("reach"):
+                        reach_val = reach_data["reach"]
+                        if reach_val > 100_000_000 or str(reach_val) == ad.library_id:
+                            logger.warning(f"[refresh] {ad.library_id}: suspicious reach={reach_val} — skipped")
+                        else:
+                            db_ad.reach = reach_val
+                            breakdown = reach_data.get("breakdown")
+                            db_ad.reach_breakdown = breakdown
+                            targeting = (breakdown or {}).get("targeting") or {}
+                            db_ad.eu_countries = targeting.get("countries_included") or None
+                            db_ad.spend_estimate = int(reach_val * _SPEND_CPM / 1000)
+                            stats["reach_updated"] += 1
+                            logger.info(f"[refresh] {ad.library_id}: reach={reach_val}")
+
+                    await session.commit()
+            except Exception as e:
+                logger.error(f"[refresh] {ad.library_id}: DB write error: {e}")
+                stats["errors"] += 1
+
+        if g_idx < len(groups):
+            # Rotate IP roughly every 5 groups (~15 ads, similar cadence as before)
+            if g_idx % 5 == 0:
                 logger.info("[refresh] Rotating IP")
                 await rotate_ip()
-            jitter = random.uniform(4, 10)
-            logger.debug(f"[refresh] jitter {jitter:.1f}s")
-            await asyncio.sleep(jitter)
+            logger.debug(f"[refresh] group sleep {GROUP_SLEEP}s")
+            await asyncio.sleep(GROUP_SLEEP)
 
     logger.info(f"[refresh] Done: {stats}")
     return stats
