@@ -5,7 +5,7 @@ from app.models import Ad, Creative
 from loguru import logger
 from app.db import AsyncSessionLocal
 from app.models import ParsingConfig, AdMediaType
-from app.browser import browser_context, build_library_url
+from app.browser import browser_context, build_library_url, goto_with_challenge_retry
 from app.parsers.library_card import parse_card_text
 from app.parsers.library_extractor import scroll_and_collect
 from app.repository import upsert_ad, save_creative
@@ -145,7 +145,10 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
     try:
         async with browser_context() as context:
             page = await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            loaded = await goto_with_challenge_retry(page, url)
+            if not loaded:
+                logger.warning(f"[#{config.id}] __rd_verify challenge persisted, skipping")
+                return stats
 
             try:
                 await page.wait_for_selector('div:has-text("Library ID")', timeout=20_000)
