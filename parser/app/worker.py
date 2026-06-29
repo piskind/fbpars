@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import select, func
 from app.models import Ad, Creative
 from loguru import logger
@@ -104,68 +104,51 @@ async def _upload_card_media(
     return s
 
 
-async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict:
-    # For auto_date_from_last_parse: use last_parsed_at as date_from if set
-    effective_date_from = config.date_from
-    if config.auto_date_from_last_parse and config.last_parsed_at:
-        effective_date_from = config.last_parsed_at.date()
+def split_date_range(date_from: date, date_to: date, chunk_days: int = 1) -> list[tuple[date, date]]:
+    chunks: list[tuple[date, date]] = []
+    current = date_from
+    while current <= date_to:
+        chunk_end = min(current + timedelta(days=chunk_days - 1), date_to)
+        chunks.append((current, chunk_end))
+        current = chunk_end + timedelta(days=1)
+    return chunks
 
-    ad_type = (config.category or "all") if config.config_type in ("filters", "fanpage") else "all"
-    url = build_library_url(
-        config.country,
-        config.keyword,
-        config.languages,
-        active_status=config.active_status or "all",
-        media_type=config.media_type_filter or "all",
-        platforms=config.platforms,
-        date_from=effective_date_from,
-        date_to=config.date_to,
-        advertiser=config.advertiser,
-        ad_type=ad_type,
-    )
-    kw_tag = config.keyword or "(no keyword)"
-    lang_tag = f" lang={config.languages}" if config.languages else ""
-    type_tag = f" [{config.config_type}]"
-    logger.info(f"[#{config.id}]{type_tag} {kw_tag}/{config.country}{lang_tag} → {url}")
 
+async def _scrape_single_period(
+    url: str,
+    config: ParsingConfig,
+    uploader: MediaUploader,
+    period_tag: str = "",
+) -> dict:
+    """Open browser, scrape one URL, close browser, upsert to DB, upload media. Returns stats."""
     stats = {
-        "raw": 0,
-        "new": 0,
-        "updated": 0,
-        "media_ok": 0,
-        "media_fail": 0,
-        "errors": 0,
-        "skipped_duplicate": 0,
-        "skipped_no_media": 0,
-        "skipped_already_rejected": 0,
-        "skipped_phash_duplicate": 0,
-        "removed_no_media": 0,
+        "raw": 0, "new": 0, "updated": 0, "media_ok": 0, "media_fail": 0, "errors": 0,
+        "skipped_duplicate": 0, "skipped_no_media": 0, "skipped_already_rejected": 0,
+        "skipped_phash_duplicate": 0, "removed_no_media": 0,
     }
-
     try:
         async with browser_context() as context:
             page = await context.new_page()
             loaded = await goto_with_challenge_retry(page, url)
             if not loaded:
-                logger.warning(f"[#{config.id}] __rd_verify challenge persisted, skipping")
+                logger.warning(f"[#{config.id}]{period_tag} __rd_verify challenge persisted, skipping")
                 return stats
 
             try:
                 await page.wait_for_selector('div:has-text("Library ID")', timeout=20_000)
             except Exception:
-                logger.warning(f"[#{config.id}] No 'Library ID' on page, probably empty results")
+                logger.warning(f"[#{config.id}]{period_tag} No 'Library ID' on page, probably empty results")
                 return stats
 
             await asyncio.sleep(5)
-            # filters/fanpage configs browse broadly — cap scrolls lower; MAX_CARDS=300 is the hard limit
             max_scrolls = 40 if config.config_type in ("filters", "fanpage") else 80
             raw_cards = await asyncio.wait_for(
                 scroll_and_collect(page, max_scrolls=max_scrolls, stable_rounds=7),
-                timeout=600,  # 10 min hard ceiling — prevents hang when browser is OOM-killed
+                timeout=600,
             )
             stats["raw"] = len(raw_cards)
 
-        # Phase 1: sequential DB upserts (browser already closed)
+        # Phase 1: sequential DB upserts (browser already closed — memory freed)
         seen_ids: set[str] = set()
         media_tasks: list[tuple[int, object]] = []
 
@@ -184,7 +167,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
             card.link_url = raw["external_url"]
 
             if not card.image_urls and not card.video_urls and not card.poster_urls:
-                logger.info(f"[#{config.id}] skip {card.library_id}: no media in card")
+                logger.info(f"[#{config.id}]{period_tag} skip {card.library_id}: no media in card")
                 stats["skipped_no_media"] += 1
                 continue
 
@@ -201,7 +184,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
                     else:
                         stats["updated"] += 1
                 except Exception as e:
-                    logger.warning(f"[#{config.id}] DB error for {card.library_id}: {e}")
+                    logger.warning(f"[#{config.id}]{period_tag} DB error for {card.library_id}: {e}")
                     await session.rollback()
                     stats["errors"] += 1
                     continue
@@ -209,8 +192,8 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
             if is_new and not skipped:
                 media_tasks.append((ad.id, card))
 
-        # Phase 2: parallel media downloads, semaphore limits to 10 concurrent
-        logger.info(f"[#{config.id}] starting parallel media for {len(media_tasks)} new ads")
+        # Phase 2: parallel media downloads
+        logger.info(f"[#{config.id}]{period_tag} starting parallel media for {len(media_tasks)} new ads")
         results = await asyncio.gather(
             *[_upload_card_media(uploader, config.id, ad_id, card)
               for ad_id, card in media_tasks],
@@ -218,25 +201,96 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
         )
         for r in results:
             if isinstance(r, Exception):
-                logger.warning(f"[#{config.id}] media task error: {r}")
+                logger.warning(f"[#{config.id}]{period_tag} media task error: {r}")
                 stats["errors"] += 1
             else:
                 for k, v in r.items():
                     stats[k] = stats.get(k, 0) + v
 
     except Exception as e:
-        logger.error(f"[#{config.id}] Fatal error: {e}")
+        logger.error(f"[#{config.id}]{period_tag} Fatal error: {e}")
         stats["errors"] += 1
 
-    # Always stamp last_parsed_at so auto_date_from_last_parse advances on next run
+    return stats
+
+
+async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict:
+    effective_date_from = config.date_from
+    if config.auto_date_from_last_parse and config.last_parsed_at:
+        effective_date_from = config.last_parsed_at.date()
+
+    ad_type = (config.category or "all") if config.config_type in ("filters", "fanpage") else "all"
+
+    # Date-range splitting: filters/fanpage configs with a multi-day period get split into
+    # daily sub-queries to bypass FB's ~1700-card scroll cap per request.
+    use_date_split = (
+        config.config_type in ("filters", "fanpage")
+        and effective_date_from is not None
+        and config.date_to is not None
+        and config.date_to > effective_date_from
+    )
+
+    total_stats = {
+        "raw": 0, "new": 0, "updated": 0, "media_ok": 0, "media_fail": 0, "errors": 0,
+        "skipped_duplicate": 0, "skipped_no_media": 0, "skipped_already_rejected": 0,
+        "skipped_phash_duplicate": 0, "removed_no_media": 0,
+    }
+
+    if use_date_split:
+        chunks = split_date_range(effective_date_from, config.date_to, chunk_days=1)
+        logger.info(
+            f"[#{config.id}] date-range split: {len(chunks)} daily sub-periods "
+            f"({effective_date_from} → {config.date_to})"
+        )
+        for i, (chunk_from, chunk_to) in enumerate(chunks, 1):
+            period_tag = f" [day {i}/{len(chunks)} {chunk_from}]"
+            url = build_library_url(
+                config.country, config.keyword, config.languages,
+                active_status=config.active_status or "all",
+                media_type=config.media_type_filter or "all",
+                platforms=config.platforms,
+                date_from=chunk_from,
+                date_to=chunk_to,
+                advertiser=config.advertiser,
+                ad_type=ad_type,
+            )
+            logger.info(f"[#{config.id}] sub-period {i}/{len(chunks)}: {chunk_from} → {url}")
+            chunk_stats = await _scrape_single_period(url, config, uploader, period_tag=period_tag)
+            for k, v in chunk_stats.items():
+                total_stats[k] = total_stats.get(k, 0) + v
+            logger.info(
+                f"[#{config.id}] sub-period {i}/{len(chunks)} done: "
+                f"raw={chunk_stats['raw']} new={chunk_stats['new']} "
+                f"total_so_far new={total_stats['new']}"
+            )
+            if i < len(chunks):
+                await asyncio.sleep(12)  # anti-ban pause between sub-periods
+    else:
+        url = build_library_url(
+            config.country, config.keyword, config.languages,
+            active_status=config.active_status or "all",
+            media_type=config.media_type_filter or "all",
+            platforms=config.platforms,
+            date_from=effective_date_from,
+            date_to=config.date_to,
+            advertiser=config.advertiser,
+            ad_type=ad_type,
+        )
+        kw_tag = config.keyword or "(no keyword)"
+        lang_tag = f" lang={config.languages}" if config.languages else ""
+        type_tag = f" [{config.config_type}]"
+        logger.info(f"[#{config.id}]{type_tag} {kw_tag}/{config.country}{lang_tag} → {url}")
+        total_stats = await _scrape_single_period(url, config, uploader)
+
+    # Stamp last_parsed_at so auto_date_from_last_parse advances on next run
     async with AsyncSessionLocal() as session:
         cfg = await session.get(ParsingConfig, config.id)
         if cfg:
             cfg.last_parsed_at = datetime.now(timezone.utc)
             await session.commit()
 
-    logger.info(f"[#{config.id}] DONE: {stats}")
-    return stats
+    logger.info(f"[#{config.id}] DONE: {total_stats}")
+    return total_stats
 
 
 async def run_once(limit: int | None = None, config_id: int | None = None) -> None:
