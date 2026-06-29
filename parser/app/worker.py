@@ -78,14 +78,10 @@ async def _upload_card_media(
         await session.flush()
 
         if all_reused and media_saved > 0:
-            db_ad = await session.get(Ad, ad_id)
-            if db_ad:
-                await session.delete(db_ad)
-            await session.commit()
-            s["media_ok"] -= media_saved
+            # All creatives reuse existing S3 keys — no new uploads, but keep the ad record.
+            # A new library_id is still a distinct ad even if visuals are identical.
             s["skipped_phash_duplicate"] += 1
-            logger.info(f"[#{config_id}] skipped {card.library_id}: visual duplicate (phash)")
-            return s
+            logger.info(f"[#{config_id}] phash-reuse {card.library_id}: saved with existing S3 keys")
 
         await session.commit()
 
