@@ -256,6 +256,13 @@ export function AdDrawer({ adId, onClose }: Props) {
               <div className="text-gray-400">Вертикаль</div>
               <div className="text-gray-800">{ad.vertical || '—'}</div>
 
+              {ad.partner && (
+                <>
+                  <div className="text-gray-400">Партнёрка</div>
+                  <div className="font-medium text-indigo-700">{ad.partner}</div>
+                </>
+              )}
+
               <div className="text-gray-400">Library ID</div>
               <div className="text-gray-800 break-all">{ad.library_id}</div>
 

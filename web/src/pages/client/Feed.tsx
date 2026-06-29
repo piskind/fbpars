@@ -35,7 +35,7 @@ type Facets = {
 }
 
 type Filters = {
-  countries: string[]
+  country: string
   search: string
   startedFrom: string
   daysMin: string
@@ -48,11 +48,14 @@ type Filters = {
   cta: string
   platforms: string[]
   leadForm: string
+  reachMin: string
+  spendMin: string
+  hasEuData: string
   // Fine settings card
   pageName: string
-  appLink: string      // "Приложение, ID или ссылка" → link_contains
+  appLink: string
   domain: string
-  linkContains: string // "В ссылке" → link_contains (fallback if appLink empty)
+  linkContains: string
   appStore: string
   lastSeenFrom: string
   ecomPlatform: string
@@ -61,7 +64,7 @@ type Filters = {
 }
 
 const emptyFilters: Filters = {
-  countries: [],
+  country: '',
   search: '',
   startedFrom: '',
   daysMin: '',
@@ -73,6 +76,9 @@ const emptyFilters: Filters = {
   cta: '',
   platforms: [],
   leadForm: '',
+  reachMin: '',
+  spendMin: '',
+  hasEuData: '',
   pageName: '',
   appLink: '',
   domain: '',
@@ -156,29 +162,34 @@ function CountryDropdown({
   onChange,
 }: {
   options: string[]
-  selected: string[]
-  onChange: (v: string[]) => void
+  selected: string | null
+  onChange: (v: string | null) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false)
+        setSearch('')
+      }
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  const label =
-    selected.length === 0
-      ? 'Все'
-      : selected.length <= 2
-        ? selected.map((c) => `${countryFlag(c)} ${c}`).join(', ')
-        : `${selected.slice(0, 2).join(', ')} +${selected.length - 2}`
+  const label = selected ? `${countryFlag(selected)} ${selected}` : 'Все'
+  const filtered = search
+    ? options.filter((c) => c.toLowerCase().includes(search.toLowerCase()))
+    : options
 
-  const toggle = (c: string) =>
-    onChange(selected.includes(c) ? selected.filter((x) => x !== c) : [...selected, c])
+  const select = (c: string | null) => {
+    onChange(c)
+    setOpen(false)
+    setSearch('')
+  }
 
   return (
     <div className="relative" ref={ref}>
@@ -191,23 +202,37 @@ function CountryDropdown({
         <ChevronDown className="w-3.5 h-3.5 text-gray-400 shrink-0" />
       </button>
       {open && (
-        <div className="absolute z-50 mt-1 bg-white border rounded-lg shadow-lg max-h-60 overflow-y-auto w-52">
-          {options.map((c) => (
-            <label
-              key={c}
-              className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer text-sm"
+        <div className="absolute z-50 mt-1 bg-white border rounded-lg shadow-lg w-52">
+          <div className="p-2 border-b">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Поиск..."
+              className="w-full px-2 py-1 text-sm border rounded"
+              autoFocus
+            />
+          </div>
+          <div className="max-h-52 overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => select(null)}
+              className={`w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 ${!selected ? 'bg-blue-50 text-blue-700 font-medium' : ''}`}
             >
-              <input
-                type="checkbox"
-                checked={selected.includes(c)}
-                onChange={() => toggle(c)}
-                className="w-3.5 h-3.5 shrink-0"
-              />
-              <span>
-                {countryFlag(c)} {c}
-              </span>
-            </label>
-          ))}
+              Все
+            </button>
+            {filtered.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => select(selected === c ? null : c)}
+                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 flex items-center justify-between ${selected === c ? 'bg-blue-50 text-blue-700 font-medium' : ''}`}
+              >
+                <span>{countryFlag(c)} {c}</span>
+                {selected === c && <span className="text-blue-500 text-xs">✓</span>}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -289,7 +314,7 @@ export function ClientFeedPage() {
   const baseParams = useMemo(() => {
     const p = new URLSearchParams()
     p.set('sort', applied.sort)
-    applied.countries.forEach((c) => p.append('countries', c))
+    if (applied.country) p.set('country', applied.country)
     if (applied.vertical) p.set('vertical', applied.vertical)
     if (applied.search.trim()) p.set('search', applied.search.trim())
     if (applied.startedFrom) p.set('started_from', applied.startedFrom)
@@ -317,6 +342,9 @@ export function ClientFeedPage() {
     if (applied.ipQuery) p.set('ip', applied.ipQuery)
     if (applied.language) p.set('language', applied.language)
     if (applied.isActive) p.set('is_active', applied.isActive)
+    if (applied.reachMin) p.set('reach_min', applied.reachMin)
+    else if (applied.hasEuData === 'yes') p.set('reach_min', '1')
+    if (applied.spendMin) p.set('spend_min', applied.spendMin)
     return p
   }, [applied])
 
@@ -397,8 +425,8 @@ export function ClientFeedPage() {
               <label className="block text-xs text-gray-500 mb-1">Страны</label>
               <CountryDropdown
                 options={facets?.countries ?? []}
-                selected={draft.countries}
-                onChange={(countries) => set({ countries })}
+                selected={draft.country || null}
+                onChange={(c) => set({ country: c ?? '' })}
               />
             </div>
 
@@ -553,6 +581,35 @@ export function ClientFeedPage() {
                       <option value="false">Нет</option>
                     </SelectField>
                   </FieldRow>
+
+                  <FieldRow label="EU данные">
+                    <SelectField value={draft.hasEuData} onChange={(v) => set({ hasEuData: v })}>
+                      <option value="">Все</option>
+                      <option value="yes">Только с охватом</option>
+                    </SelectField>
+                  </FieldRow>
+
+                  <FieldRow label="Мин. охват">
+                    <input
+                      type="number"
+                      min="0"
+                      value={draft.reachMin}
+                      onChange={(e) => set({ reachMin: e.target.value })}
+                      placeholder="напр. 10000"
+                      className="w-full px-3 py-2 border rounded-lg text-sm"
+                    />
+                  </FieldRow>
+
+                  <FieldRow label="Мин. спенд $">
+                    <input
+                      type="number"
+                      min="0"
+                      value={draft.spendMin}
+                      onChange={(e) => set({ spendMin: e.target.value })}
+                      placeholder="напр. 1000"
+                      className="w-full px-3 py-2 border rounded-lg text-sm"
+                    />
+                  </FieldRow>
                 </div>
               </div>
 
@@ -670,7 +727,17 @@ export function ClientFeedPage() {
 
         {/* ── Ad grid ── */}
         {isLoading && (
-          <div className="text-gray-400 py-8 text-center">Загрузка...</div>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mb-4">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div key={i} className="bg-white rounded-xl shadow overflow-hidden animate-pulse">
+                <div className="w-full aspect-square bg-gray-200" />
+                <div className="p-3 space-y-2">
+                  <div className="h-3 bg-gray-200 rounded w-3/4" />
+                  <div className="h-3 bg-gray-200 rounded w-1/2" />
+                </div>
+              </div>
+            ))}
+          </div>
         )}
 
         <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4">
@@ -728,6 +795,11 @@ export function ClientFeedPage() {
                       {ad.duplicates_count > 0 && (
                         <span className="shrink-0 text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-normal">
                           +{ad.duplicates_count}
+                        </span>
+                      )}
+                      {ad.partner && (
+                        <span className="shrink-0 text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full font-normal">
+                          {ad.partner}
                         </span>
                       )}
                     </span>

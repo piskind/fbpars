@@ -95,6 +95,7 @@ export type Ad = {
   days_active: number
   first_seen_at: string
   last_seen_at: string
+  partner: string | null
   duplicates_count: number
   reach: number | null
   reach_breakdown: {
