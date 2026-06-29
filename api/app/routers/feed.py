@@ -13,6 +13,7 @@ from app.models_proxy import (
     ModerationEntry,
     ModerationStatus,
     ClientUser,
+    ParsingConfig,
 )
 from app.schemas import AdOut
 
@@ -250,6 +251,18 @@ async def list_feed(
         ph = next((c.phash for c in ad.creatives if c.phash), None)
         ad.duplicates_count = dupe_map.get(ph, 0) if ph else 0
 
+    # Partner lookup via parsing_configs (keyword + country)
+    _keywords = list({ad.keyword for ad in items if ad.keyword})
+    _partner_map: dict[tuple, str | None] = {}
+    if _keywords:
+        _cfg_rows = (await session.execute(
+            select(ParsingConfig.keyword, ParsingConfig.country, ParsingConfig.partner)
+            .where(ParsingConfig.keyword.in_(_keywords))
+        )).all()
+        _partner_map = {(r.keyword, r.country): r.partner for r in _cfg_rows}
+    for ad in items:
+        ad.partner = _partner_map.get((ad.keyword, ad.country)) if ad.keyword else None
+
     return items
 
 
@@ -343,6 +356,15 @@ async def get_ad(
             if cnt - 1 > max_dupes:
                 max_dupes = cnt - 1
     ad.duplicates_count = max_dupes
+
+    if ad.keyword:
+        _cfg = (await session.execute(
+            select(ParsingConfig.partner)
+            .where(ParsingConfig.keyword == ad.keyword, ParsingConfig.country == ad.country)
+        )).scalar_one_or_none()
+        ad.partner = _cfg
+    else:
+        ad.partner = None
 
     return ad
 
