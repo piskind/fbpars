@@ -124,6 +124,8 @@ def build_library_url(
     date_to=None,
     advertiser: str | None = None,
     ad_type: str = "all",
+    sort_mode: str = "total_impressions",
+    sort_direction: str = "desc",
 ) -> str:
     from urllib.parse import quote
     # Braille blank U+2800 — invisible keyword that returns broad results
@@ -132,6 +134,7 @@ def build_library_url(
         "https://www.facebook.com/ads/library/"
         f"?active_status={active_status}&ad_type={ad_type}&country={country}"
         f"&q={q}&search_type=keyword_unordered&media_type={media_type}"
+        f"&sort_data%5Bmode%5D={sort_mode}&sort_data%5Bdirection%5D={sort_direction}"
     )
     for i, lang in enumerate(languages or []):
         url += f"&content_languages%5B{i}%5D={lang}"

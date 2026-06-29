@@ -16,6 +16,16 @@ const VERTICALS = [
 
 const PLATFORMS = ['facebook', 'instagram', 'messenger', 'audience_network']
 
+const SORT_MODES = [
+  { value: 'total_impressions', label: 'По охвату' },
+  { value: 'start_date', label: 'По дате' },
+]
+
+const SORT_DIRECTIONS = [
+  { value: 'desc', label: 'DESC (убыв.)' },
+  { value: 'asc', label: 'ASC (возр.)' },
+]
+
 const FB_AD_TYPES = [
   { value: 'all', label: 'Все объявления' },
   { value: 'employment_ads', label: 'Трудоустройство' },
@@ -50,6 +60,9 @@ function filterLines(c: Config): string[] {
   } else if (c.date_from || c.date_to) {
     lines.push(`Даты: ${c.date_from || '…'} — ${c.date_to || '…'}`)
   }
+  const sortLabel = SORT_MODES.find((m) => m.value === c.sort_mode)?.label ?? c.sort_mode
+  const dirLabel = SORT_DIRECTIONS.find((d) => d.value === c.sort_direction)?.label ?? c.sort_direction
+  lines.push(`Сортировка: ${sortLabel} · ${dirLabel}`)
   return lines
 }
 
@@ -106,6 +119,8 @@ function EditModal({ config, onClose }: { config: Config; onClose: () => void })
   const [eDateFrom, setEDateFrom] = useState(config.date_from || '')
   const [eDateTo, setEDateTo] = useState(config.date_to || '')
   const [eAutoDate, setEAutoDate] = useState(config.auto_date_from_last_parse ?? false)
+  const [eSortMode, setESortMode] = useState(config.sort_mode || 'total_impressions')
+  const [eSortDirection, setESortDirection] = useState(config.sort_direction || 'desc')
   const [eFiltersOpen, setEFiltersOpen] = useState(false)
 
   const togglePlatform = (p: string) =>
@@ -117,6 +132,8 @@ function EditModal({ config, onClose }: { config: Config; onClose: () => void })
         country: eCountry,
         vertical: eVertical,
         category: eCategory || null,
+        sort_mode: eSortMode,
+        sort_direction: eSortDirection,
       }
       if (isKeyword) {
         payload.keyword = eKeyword
@@ -215,6 +232,22 @@ function EditModal({ config, onClose }: { config: Config; onClose: () => void })
               </div>
             </>
           )}
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Сортировка</label>
+            <select value={eSortMode} onChange={(e) => setESortMode(e.target.value)} className={IC}>
+              {SORT_MODES.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Направление</label>
+            <select value={eSortDirection} onChange={(e) => setESortDirection(e.target.value)} className={IC}>
+              {SORT_DIRECTIONS.map((d) => (
+                <option key={d.value} value={d.value}>{d.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* Collapsible filters panel (filters config only) */}
@@ -312,6 +345,71 @@ function EditModal({ config, onClose }: { config: Config; onClose: () => void })
 }
 
 // ---------------------------------------------------------------------------
+// Bulk add modal
+// ---------------------------------------------------------------------------
+function BulkAddModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient()
+  const [text, setText] = useState('')
+  const [result, setResult] = useState<{ created: number; skipped: number } | null>(null)
+
+  const bulk = useMutation({
+    mutationFn: async () => {
+      const res = await api.post<{ created: number; skipped: number }>('/configs/bulk', { text })
+      return res.data
+    },
+    onSuccess: (data) => {
+      setResult(data)
+      qc.invalidateQueries({ queryKey: ['configs'] })
+    },
+  })
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold">Добавить пакетом</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          Формат строки: <code className="bg-gray-100 px-1 rounded">страна|ключ|сортировка|направление|вертикаль|заметка</code>
+          <br />
+          Пример: <code className="bg-gray-100 px-1 rounded">MX|keto|total_impressions|desc|nutra|мексика</code>
+          <br />
+          Поля начиная со 2-го необязательны. Строки с <code className="bg-gray-100 px-1 rounded">#</code> игнорируются.
+        </p>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={"MX|keto\nUS||start_date|asc\nBR"}
+          rows={10}
+          className="w-full border rounded-lg px-3 py-2 text-sm font-mono mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        {result && (
+          <div className="mb-4 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+            Создано: {result.created}, пропущено (дублей): {result.skipped}
+          </div>
+        )}
+        {bulk.isError && (
+          <div className="mb-4 text-sm text-red-600">Ошибка при добавлении</div>
+        )}
+        <div className="flex gap-3 justify-end">
+          <button onClick={onClose} className="px-4 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50">
+            Закрыть
+          </button>
+          <button
+            onClick={() => bulk.mutate()}
+            disabled={!text.trim() || bulk.isPending}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+          >
+            {bulk.isPending ? 'Добавляем…' : 'Добавить'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 type ActiveTab = 'keyword' | 'filters' | 'fanpage'
@@ -334,6 +432,8 @@ export default function ConfigsPage() {
   const [notes, setNotes] = useState('')
   const [partner, setPartner] = useState('')
   const [category, setCategory] = useState('')
+  const [kSortMode, setKSortMode] = useState('total_impressions')
+  const [kSortDirection, setKSortDirection] = useState('desc')
 
   const createKeyword = useMutation({
     mutationFn: async () => {
@@ -346,6 +446,8 @@ export default function ConfigsPage() {
         partner: partner || null,
         category: category || null,
         is_active: true,
+        sort_mode: kSortMode,
+        sort_direction: kSortDirection,
       })
     },
     onSuccess: () => {
@@ -355,6 +457,8 @@ export default function ConfigsPage() {
       setNotes('')
       setPartner('')
       setCategory('')
+      setKSortMode('total_impressions')
+      setKSortDirection('desc')
       qc.invalidateQueries({ queryKey: ['configs'] })
     },
   })
@@ -371,7 +475,10 @@ export default function ConfigsPage() {
   const [fDateFrom, setFDateFrom] = useState('')
   const [fDateTo, setFDateTo] = useState('')
   const [fAutoDate, setFAutoDate] = useState(false)
+  const [fSortMode, setFSortMode] = useState('total_impressions')
+  const [fSortDirection, setFSortDirection] = useState('desc')
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [bulkOpen, setBulkOpen] = useState(false)
 
   const createFilters = useMutation({
     mutationFn: async () => {
@@ -381,6 +488,8 @@ export default function ConfigsPage() {
         keyword: fKeyword.trim() || null,
         category: fCategory !== 'all' ? fCategory : null,
         is_active: true,
+        sort_mode: fSortMode,
+        sort_direction: fSortDirection,
       }
       if (fLanguages.trim()) {
         payload.languages = fLanguages.split(',').map((s) => s.trim()).filter(Boolean)
@@ -406,6 +515,8 @@ export default function ConfigsPage() {
       setFDateFrom('')
       setFDateTo('')
       setFAutoDate(false)
+      setFSortMode('total_impressions')
+      setFSortDirection('desc')
       qc.invalidateQueries({ queryKey: ['configs'] })
     },
   })
@@ -456,6 +567,9 @@ export default function ConfigsPage() {
     <div>
       {editingConfig && (
         <EditModal config={editingConfig} onClose={() => setEditingConfig(null)} />
+      )}
+      {bulkOpen && (
+        <BulkAddModal onClose={() => setBulkOpen(false)} />
       )}
       {filterPopup && (
         <FilterPopup
@@ -512,6 +626,22 @@ export default function ConfigsPage() {
           <div>
             <label className="block text-xs text-gray-500 mb-1">Категория</label>
             <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="необязательно" className={IC} />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Сортировка</label>
+            <select value={kSortMode} onChange={(e) => setKSortMode(e.target.value)} className={IC}>
+              {SORT_MODES.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Направление</label>
+            <select value={kSortDirection} onChange={(e) => setKSortDirection(e.target.value)} className={IC}>
+              {SORT_DIRECTIONS.map((d) => (
+                <option key={d.value} value={d.value}>{d.label}</option>
+              ))}
+            </select>
           </div>
           <div className="flex-1 min-w-[200px]">
             <label className="block text-xs text-gray-500 mb-1">Заметка</label>
@@ -614,17 +744,39 @@ export default function ConfigsPage() {
                     >?</span>
                   </label>
                 </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Сортировка</label>
+                  <select value={fSortMode} onChange={(e) => setFSortMode(e.target.value)} className={IC}>
+                    {SORT_MODES.map((m) => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Направление</label>
+                  <select value={fSortDirection} onChange={(e) => setFSortDirection(e.target.value)} className={IC}>
+                    {SORT_DIRECTIONS.map((d) => (
+                      <option key={d.value} value={d.value}>{d.label}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
             )}
           </div>
 
-          <div className="mt-4">
+          <div className="mt-4 flex gap-2">
             <button
               onClick={() => createFilters.mutate()}
               disabled={!fCountry || createFilters.isPending}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
             >
               + Добавить
+            </button>
+            <button
+              onClick={() => setBulkOpen(true)}
+              className="px-4 py-2 bg-gray-600 text-white rounded-lg text-sm hover:bg-gray-700"
+            >
+              Добавить пакетом
             </button>
           </div>
         </div>

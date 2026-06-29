@@ -58,13 +58,15 @@ class ParsingConfig(Base):
     date_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     advertiser: Mapped[str | None] = mapped_column(String(255), nullable=True)
     auto_date_from_last_parse: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_mode: Mapped[str] = mapped_column(String(32), default="total_impressions")
+    sort_direction: Mapped[str] = mapped_column(String(8), default="desc")
     last_parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        UniqueConstraint("keyword", "country", name="uq_keyword_country"),
+        UniqueConstraint("keyword", "country", "sort_mode", "sort_direction", name="uq_keyword_country_sort"),
     )
 
 

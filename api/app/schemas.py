@@ -24,6 +24,10 @@ _VALID_ACTIVE_STATUS = {"all", "active", "inactive"}
 _VALID_MEDIA_TYPES = {"all", "image", "video", "meme"}
 
 
+_VALID_SORT_MODES = {"total_impressions", "start_date"}
+_VALID_SORT_DIRECTIONS = {"desc", "asc"}
+
+
 class ParsingConfigIn(BaseModel):
     keyword: str | None = None
     country: str
@@ -41,6 +45,8 @@ class ParsingConfigIn(BaseModel):
     date_to: date | None = None
     advertiser: str | None = None
     auto_date_from_last_parse: bool = False
+    sort_mode: str = "total_impressions"
+    sort_direction: str = "desc"
 
     @field_validator("config_type")
     @classmethod
@@ -84,6 +90,8 @@ class ParsingConfigUpdate(BaseModel):
     date_to: date | None = None
     advertiser: str | None = None
     auto_date_from_last_parse: bool | None = None
+    sort_mode: str | None = None
+    sort_direction: str | None = None
 
     @field_validator("config_type")
     @classmethod
@@ -107,6 +115,15 @@ class ParsingConfigUpdate(BaseModel):
         return v
 
 
+class BulkConfigIn(BaseModel):
+    text: str
+
+
+class BulkConfigOut(BaseModel):
+    created: int
+    skipped: int
+
+
 class ParsingConfigOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -126,6 +143,8 @@ class ParsingConfigOut(BaseModel):
     date_to: date | None = None
     advertiser: str | None = None
     auto_date_from_last_parse: bool = False
+    sort_mode: str = "total_impressions"
+    sort_direction: str = "desc"
     created_at: datetime
     updated_at: datetime
     ads_count: int = 0

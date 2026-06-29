@@ -57,6 +57,8 @@ export type Config = {
   advertiser: string | null
   auto_date_from_last_parse: boolean
   languages: string[] | null
+  sort_mode: string
+  sort_direction: string
 }
 
 export type Creative = {
