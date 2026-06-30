@@ -233,13 +233,13 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
     }
 
     if use_date_split:
-        chunks = split_date_range(effective_date_from, config.date_to, chunk_days=7)
+        chunks = split_date_range(effective_date_from, config.date_to, chunk_days=30)
         logger.info(
-            f"[#{config.id}] date-range split: {len(chunks)} weekly sub-periods "
+            f"[#{config.id}] date-range split: {len(chunks)} monthly sub-periods "
             f"({effective_date_from} → {config.date_to})"
         )
         for i, (chunk_from, chunk_to) in enumerate(chunks, 1):
-            period_tag = f" [week {i}/{len(chunks)} {chunk_from}]"
+            period_tag = f" [month {i}/{len(chunks)} {chunk_from}]"
             url = build_library_url(
                 config.country, config.keyword, config.languages,
                 active_status=config.active_status or "all",
