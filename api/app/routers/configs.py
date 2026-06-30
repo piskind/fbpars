@@ -32,6 +32,7 @@ def _config_out(cfg: ParsingConfig, ads_count: int = 0, last_parsed_at: datetime
         date_to=cfg.date_to,
         advertiser=cfg.advertiser,
         auto_date_from_last_parse=cfg.auto_date_from_last_parse,
+        is_targeted_country=cfg.is_targeted_country,
         sort_mode=cfg.sort_mode,
         sort_direction=cfg.sort_direction,
         created_at=cfg.created_at,
@@ -91,6 +92,7 @@ async def create_config(
         date_to=body.date_to,
         advertiser=body.advertiser,
         auto_date_from_last_parse=body.auto_date_from_last_parse,
+        is_targeted_country=body.is_targeted_country,
         sort_mode=body.sort_mode,
         sort_direction=body.sort_direction,
     )
@@ -143,6 +145,8 @@ async def update_config(
         cfg.advertiser = body.advertiser
     if body.auto_date_from_last_parse is not None:
         cfg.auto_date_from_last_parse = body.auto_date_from_last_parse
+    if body.is_targeted_country is not None:
+        cfg.is_targeted_country = body.is_targeted_country
     if body.sort_mode is not None:
         cfg.sort_mode = body.sort_mode
     if body.sort_direction is not None:

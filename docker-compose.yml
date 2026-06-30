@@ -86,7 +86,7 @@ services:
         condition: service_healthy
     volumes:
       - ./db:/db
-    command: ["python", "/db/migrations/add_sort_fields.py"]
+    command: ["/bin/sh", "-c", "python /db/migrations/add_sort_fields.py && python /db/migrations/add_is_targeted_country.py"]
     restart: "no"
 
   api:

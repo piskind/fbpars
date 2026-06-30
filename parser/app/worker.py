@@ -251,6 +251,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
                 ad_type=ad_type,
                 sort_mode=getattr(config, "sort_mode", "total_impressions") or "total_impressions",
                 sort_direction=getattr(config, "sort_direction", "desc") or "desc",
+                is_targeted_country=getattr(config, "is_targeted_country", None),
             )
             logger.info(f"[#{config.id}] sub-period {i}/{len(chunks)}: {chunk_from} → {url}")
             chunk_stats = await _scrape_single_period(url, config, uploader, period_tag=period_tag)
@@ -276,6 +277,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
             ad_type=ad_type,
             sort_mode=getattr(config, "sort_mode", "total_impressions") or "total_impressions",
             sort_direction=getattr(config, "sort_direction", "desc") or "desc",
+            is_targeted_country=getattr(config, "is_targeted_country", None),
         )
         kw_tag = config.keyword or "(no keyword)"
         lang_tag = f" lang={config.languages}" if config.languages else ""

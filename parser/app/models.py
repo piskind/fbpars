@@ -58,6 +58,7 @@ class ParsingConfig(Base):
     date_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     advertiser: Mapped[str | None] = mapped_column(String(255), nullable=True)
     auto_date_from_last_parse: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_targeted_country: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     sort_mode: Mapped[str] = mapped_column(String(32), default="total_impressions")
     sort_direction: Mapped[str] = mapped_column(String(8), default="desc")
     last_parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

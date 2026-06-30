@@ -45,6 +45,7 @@ class ParsingConfigIn(BaseModel):
     date_to: date | None = None
     advertiser: str | None = None
     auto_date_from_last_parse: bool = False
+    is_targeted_country: bool | None = None
     sort_mode: str = "total_impressions"
     sort_direction: str = "desc"
 
@@ -90,6 +91,7 @@ class ParsingConfigUpdate(BaseModel):
     date_to: date | None = None
     advertiser: str | None = None
     auto_date_from_last_parse: bool | None = None
+    is_targeted_country: bool | None = None
     sort_mode: str | None = None
     sort_direction: str | None = None
 
@@ -143,6 +145,7 @@ class ParsingConfigOut(BaseModel):
     date_to: date | None = None
     advertiser: str | None = None
     auto_date_from_last_parse: bool = False
+    is_targeted_country: bool | None = None
     sort_mode: str = "total_impressions"
     sort_direction: str = "desc"
     created_at: datetime
