@@ -23,7 +23,7 @@ services:
     restart: unless-stopped
     command: >
       -L=http://:8888
-      -F=socks5://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}
+      -F=${PROXY_TYPE}://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}
     ports:
       - "8888:8888"
 
