@@ -296,7 +296,7 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
     return total_stats
 
 
-CONFIG_CONCURRENCY = 3
+CONFIG_CONCURRENCY = 1
 
 
 async def run_once(
