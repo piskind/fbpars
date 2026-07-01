@@ -296,7 +296,14 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
     return total_stats
 
 
-async def run_once(limit: int | None = None, config_id: int | None = None) -> None:
+CONFIG_CONCURRENCY = 3
+
+
+async def run_once(
+    limit: int | None = None,
+    config_id: int | None = None,
+    parallel: bool = True,
+) -> None:
     ip = await current_ip()
     logger.info(f"Starting worker. Current IP: {ip}")
 
@@ -309,7 +316,9 @@ async def run_once(limit: int | None = None, config_id: int | None = None) -> No
 
     if limit:
         configs = configs[:limit]
-    logger.info(f"Loaded {len(configs)} config(s){f' (single: #{config_id})' if config_id else ''}")
+
+    mode = f"parallel (concurrency={CONFIG_CONCURRENCY})" if parallel else "sequential"
+    logger.info(f"Loaded {len(configs)} config(s) — mode: {mode}{f' (single: #{config_id})' if config_id else ''}")
 
     uploader = MediaUploader()
     total = {
@@ -318,15 +327,37 @@ async def run_once(limit: int | None = None, config_id: int | None = None) -> No
         "skipped_phash_duplicate": 0, "removed_no_media": 0,
     }
 
-    for i, config in enumerate(configs, 1):
-        logger.info(f"--- [{i}/{len(configs)}] config #{config.id} ---")
-        stats = await process_config(config, uploader)
-        for k, v in stats.items():
-            total[k] = total.get(k, 0) + v
+    if parallel and not config_id:
+        sem = asyncio.Semaphore(CONFIG_CONCURRENCY)
 
-        if i < len(configs):
-            logger.info("Rotating IP before next config")
-            await rotate_ip()
+        async def _run_with_sem(config: ParsingConfig) -> dict:
+            async with sem:
+                logger.info(f"[parallel] starting config #{config.id} ({config.keyword or 'no-kw'}/{config.country})")
+                result = await process_config(config, uploader)
+                logger.info(f"[parallel] finished config #{config.id}: new={result.get('new', 0)}")
+                return result
+
+        results = await asyncio.gather(
+            *[_run_with_sem(cfg) for cfg in configs],
+            return_exceptions=True,
+        )
+        for cfg, r in zip(configs, results):
+            if isinstance(r, Exception):
+                logger.error(f"[parallel] config #{cfg.id} raised: {r}")
+                total["errors"] = total.get("errors", 0) + 1
+            else:
+                for k, v in r.items():
+                    total[k] = total.get(k, 0) + v
+    else:
+        for i, config in enumerate(configs, 1):
+            logger.info(f"--- [{i}/{len(configs)}] config #{config.id} ---")
+            stats = await process_config(config, uploader)
+            for k, v in stats.items():
+                total[k] = total.get(k, 0) + v
+
+            if i < len(configs):
+                logger.info("Rotating IP before next config")
+                await rotate_ip()
 
     logger.info(f"=== WORKER FINISHED. Totals: {total} ===")
     return total

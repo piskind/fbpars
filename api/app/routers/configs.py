@@ -185,9 +185,11 @@ async def bulk_create_configs(
 ):
     """
     Create multiple configs from pipe-separated text (one per line).
-    Format: country|keyword|sort_mode|sort_direction|vertical|notes
-    Defaults: keyword=empty, sort_mode=total_impressions, sort_direction=desc, vertical=nutra
+    Format: country|keyword|sort_mode|sort_direction|vertical|active_status|languages|notes
+    Defaults: keyword=empty, sort_mode=total_impressions, sort_direction=desc, vertical=nutra,
+              active_status=all, languages=empty, notes=empty
     config_type: 'keyword' if keyword provided, else 'filters'.
+    languages: comma-separated codes, e.g. 'es' or 'es,pt'
     """
     created = 0
     skipped = 0
@@ -203,7 +205,11 @@ async def bulk_create_configs(
         sort_mode = (parts[2] if len(parts) > 2 and parts[2] else '') or 'total_impressions'
         sort_direction = (parts[3] if len(parts) > 3 and parts[3] else '') or 'desc'
         vertical = (parts[4] if len(parts) > 4 and parts[4] else '') or 'nutra'
-        notes = parts[5] if len(parts) > 5 and parts[5] else None
+        active_status_raw = parts[5] if len(parts) > 5 and parts[5] else None
+        active_status = active_status_raw if active_status_raw in ('active', 'inactive', 'all') else None
+        languages_raw = parts[6] if len(parts) > 6 and parts[6] else None
+        languages = [lang.strip() for lang in languages_raw.split(',') if lang.strip()] if languages_raw else None
+        notes = parts[7] if len(parts) > 7 and parts[7] else None
         config_type = 'keyword' if keyword else 'filters'
         try:
             async with session.begin_nested():
@@ -216,6 +222,8 @@ async def bulk_create_configs(
                     config_type=config_type,
                     sort_mode=sort_mode,
                     sort_direction=sort_direction,
+                    active_status=active_status,
+                    languages=languages,
                 )
                 session.add(cfg)
             created += 1

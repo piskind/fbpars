@@ -371,16 +371,18 @@ function BulkAddModal({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
         </div>
         <p className="text-xs text-gray-500 mb-3">
-          Формат строки: <code className="bg-gray-100 px-1 rounded">страна|ключ|сортировка|направление|вертикаль|заметка</code>
+          Формат строки: <code className="bg-gray-100 px-1 rounded">страна|ключ|сортировка|направление|вертикаль|active_status|языки|заметка</code>
           <br />
-          Пример: <code className="bg-gray-100 px-1 rounded">MX|keto|total_impressions|desc|nutra|мексика</code>
+          Пример: <code className="bg-gray-100 px-1 rounded">PE|adelgazar|total_impressions|desc|nutra|active|es|ключ adelgazar</code>
           <br />
+          <code className="bg-gray-100 px-1 rounded">active_status</code>: active / inactive / all (дефолт all).{' '}
+          <code className="bg-gray-100 px-1 rounded">языки</code>: через запятую, напр. <code className="bg-gray-100 px-1 rounded">es,pt</code>.{' '}
           Поля начиная со 2-го необязательны. Строки с <code className="bg-gray-100 px-1 rounded">#</code> игнорируются.
         </p>
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={"MX|keto\nUS||start_date|asc\nBR"}
+          placeholder={"PE|adelgazar|total_impressions|desc|nutra|active|es|ключ adelgazar\nPE|diabetes|total_impressions|desc|nutra|active|es|ключ diabetes"}
           rows={10}
           className="w-full border rounded-lg px-3 py-2 text-sm font-mono mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
