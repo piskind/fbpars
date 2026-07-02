@@ -1,12 +1,44 @@
 import asyncio
+import re
 import time
 from datetime import datetime
 from playwright.async_api import Page
 from loguru import logger
 
-MAX_CARDS = 300       # hard stop — beyond this browser degrades
+MAX_CARDS = 2500      # hard stop — safety net; FB caps the feed well before this
 _DEGRADE_FACTOR = 3   # scroll took N× median of first 5 → stop early
 _DEGRADE_MIN_S = 10   # degrade only triggered if scroll > this many seconds
+
+_LIBRARY_ID_RE = re.compile(r"Library ID:\s*(\d+)")
+
+
+def _merge_card(accumulated: dict, card: dict) -> bool:
+    """
+    Merge one EXTRACT_SCRIPT card into the accumulator keyed by Library ID.
+
+    FB virtualizes the feed and evicts off-screen cards, so any single DOM snapshot
+    only holds ~20-30 cards. Accumulating across every scroll (and backfilling media
+    that rendered lazily) is what lets us retain the full 1700+ set.
+
+    Returns True if this call added a new unique card.
+    """
+    m = _LIBRARY_ID_RE.search(card.get("text") or "")
+    if not m:
+        return False
+    lib_id = m.group(1)
+    existing = accumulated.get(lib_id)
+    if existing is None:
+        accumulated[lib_id] = card
+        return True
+    # Backfill media/urls that may have rendered after the card first appeared.
+    if not existing.get("images") and card.get("images"):
+        existing["images"] = card["images"]
+    if not existing.get("videos") and card.get("videos"):
+        existing["videos"] = card["videos"]
+    for key in ("external_url", "page_url"):
+        if not existing.get(key) and card.get(key):
+            existing[key] = card[key]
+    return False
 
 
 SCROLL_SCRIPT = """
@@ -306,7 +338,10 @@ async def scroll_and_collect(
     stable_rounds: int = 3,
     max_cards: int = MAX_CARDS,
 ) -> list[dict]:
-    seen_count = 0
+    # Accumulate cards across every scroll keyed by Library ID. FB evicts off-screen
+    # cards from the DOM, so a single final snapshot only sees ~20-30 — the accumulator
+    # is what retains the whole feed.
+    accumulated: dict[str, dict] = {}
     stable = 0
     last_height = 0
     scroll_times: list[float] = []
@@ -318,13 +353,17 @@ async def scroll_and_collect(
         elapsed = time.perf_counter() - t0
         scroll_times.append(elapsed)
 
-        current_count = len(cards)
+        prev_total = len(accumulated)
+        for card in cards:
+            _merge_card(accumulated, card)
+        current_total = len(accumulated)
+
         logger.info(
             f"Scroll {i + 1}/{max_scrolls}: height={new_height}, "
-            f"cards={current_count}, t={elapsed:.1f}s"
+            f"dom={len(cards)}, total={current_total}, t={elapsed:.1f}s"
         )
 
-        if current_count >= max_cards:
+        if current_total >= max_cards:
             logger.warning(
                 f"[scroll] MAX_CARDS={max_cards} reached at scroll {i + 1} — stopping"
             )
@@ -341,7 +380,8 @@ async def scroll_and_collect(
                 )
                 break
 
-        if current_count == seen_count and new_height == last_height:
+        # End of feed: no new unique cards AND height stopped growing for N rounds.
+        if current_total == prev_total and new_height == last_height:
             stable += 1
             if stable >= stable_rounds:
                 logger.info(f"Reached end of feed after {i + 1} scrolls")
@@ -349,10 +389,11 @@ async def scroll_and_collect(
         else:
             stable = 0
 
-        seen_count = current_count
         last_height = new_height
         await asyncio.sleep(1.5)
 
+    # Final pass: nudge lazy <video> elements into view, then re-extract to backfill
+    # media on cards still present in the DOM.
     await page.evaluate("""
         () => {
             for (const v of document.querySelectorAll('video')) {
@@ -362,7 +403,8 @@ async def scroll_and_collect(
         }
     """)
     await asyncio.sleep(2)
+    for card in await page.evaluate(EXTRACT_SCRIPT):
+        _merge_card(accumulated, card)
 
-    final_cards = await page.evaluate(EXTRACT_SCRIPT)
-    logger.info(f"Total extracted: {len(final_cards)} cards")
-    return final_cards
+    logger.info(f"Total extracted: {len(accumulated)} cards")
+    return list(accumulated.values())

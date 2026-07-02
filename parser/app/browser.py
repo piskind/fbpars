@@ -1,5 +1,9 @@
 import asyncio
+import json
+import random
+import uuid
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs, urlencode
 from playwright.async_api import async_playwright, Browser, BrowserContext
 from app.config import settings
 from loguru import logger
@@ -156,6 +160,346 @@ def build_library_url(
             f"— skipped. advertiser={advertiser!r}"
         )
     return url
+
+
+_SESSION_FIELDS = {"lsd", "jazoest", "__s", "__dyn", "__csr", "__rev", "__hsi"}
+
+
+async def _setup_token_capture(page, captured: dict) -> tuple[asyncio.Event, asyncio.Event]:
+    """
+    Register a request listener on page that captures GraphQL session tokens
+    and base_form_data. Returns (any_gql_event, pagination_event).
+    """
+    any_gql_event = asyncio.Event()
+    pagination_event = asyncio.Event()
+
+    def _handle_request(request):
+        if "/api/graphql" not in request.url or request.method != "POST":
+            return
+        try:
+            post_data = request.post_data or ""
+            parsed = parse_qs(post_data)
+
+            if not any_gql_event.is_set():
+                for field in _SESSION_FIELDS:
+                    if field in parsed and field not in captured:
+                        captured[field] = parsed[field][0]
+                if captured.get("lsd"):
+                    any_gql_event.set()
+
+            if "AdLibrarySearchPaginationQuery" in post_data and not pagination_event.is_set():
+                captured["base_form_data"] = {k: v[0] for k, v in parsed.items() if v}
+                if "doc_id" in parsed:
+                    captured["doc_id"] = parsed["doc_id"][0]
+                pagination_event.set()
+
+        except Exception as exc:
+            logger.warning(f"[tokens] request parse error: {exc}")
+
+    page.on("request", _handle_request)
+    return any_gql_event, pagination_event
+
+
+async def _load_and_scroll(page, url: str, pagination_event: asyncio.Event) -> None:
+    """Navigate to url (handling __rd_verify) then scroll to trigger pagination query."""
+    loaded = await goto_with_challenge_retry(page, url)
+    if not loaded:
+        raise RuntimeError(f"[tokens] page load failed: {url}")
+
+    await asyncio.sleep(3)
+    for _ in range(6):
+        if pagination_event.is_set():
+            break
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(2)
+
+
+async def extract_session_tokens(url: str) -> dict:
+    """
+    Standalone helper: opens browser, extracts tokens, closes browser.
+    For pagination use scrape_via_browser_graphql() instead.
+    """
+    captured: dict = {}
+    async with browser_context() as context:
+        page = await context.new_page()
+        any_gql_event, pagination_event = await _setup_token_capture(page, captured)
+        await _load_and_scroll(page, url, pagination_event)
+        try:
+            await asyncio.wait_for(any_gql_event.wait(), timeout=20.0)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"[tokens] timeout: no GraphQL request fired at {url}")
+        cookies = await context.cookies()
+        captured["cookies"] = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+    logger.info(f"[tokens] extracted: {list(captured.keys())}")
+    return captured
+
+
+class _RateLimited(Exception):
+    pass
+
+
+async def _scrape_attempt(url: str, max_ads: int, max_scrolls: int) -> list[dict]:
+    """Single attempt: open browser, intercept responses, scroll. Raises _RateLimited if blocked."""
+    from app.graphql_client import _parse_response_json, _extract_ads_and_cursor
+
+    ad_nodes: list[dict] = []
+    seen_ids: set[str] = set()
+    rate_limit_hits = 0
+
+    async with browser_context() as context:
+        page = await context.new_page()
+
+        async def _on_request_finished(request):
+            nonlocal rate_limit_hits
+            if "/api/graphql" not in request.url:
+                return
+            try:
+                resp = await request.response()
+                if resp is None:
+                    return
+                text = await resp.text()
+                if "1675004" in text:
+                    rate_limit_hits += 1
+                    logger.warning(f"[scrape] rate limit hit #{rate_limit_hits} from browser request")
+                    return
+                if "ad_library_main" not in text:
+                    return
+                parsed = _parse_response_json(text)
+                nodes, _, _ = _extract_ads_and_cursor(parsed)
+                new_count = 0
+                for node in nodes:
+                    nid = str(node.get("id") or "")
+                    if nid and nid not in seen_ids:
+                        seen_ids.add(nid)
+                        ad_nodes.append(node)
+                        new_count += 1
+                if new_count:
+                    logger.info(f"[scrape] +{new_count} ads (total={len(ad_nodes)})")
+            except Exception as exc:
+                logger.warning(f"[scrape] requestfinished error: {exc}")
+
+        page.on("requestfinished", _on_request_finished)
+
+        loaded = await goto_with_challenge_retry(page, url)
+        if not loaded:
+            raise RuntimeError(f"[scrape] page load failed: {url}")
+
+        try:
+            await page.wait_for_selector('div:has-text("Library ID")', timeout=20_000)
+        except Exception:
+            logger.warning("[scrape] no ads visible on page")
+            return []
+
+        await asyncio.sleep(3)
+
+        stable = 0
+        prev_count = 0
+        for i in range(max_scrolls):
+            if len(ad_nodes) >= max_ads:
+                logger.info(f"[scrape] max_ads={max_ads} reached at scroll {i + 1}")
+                break
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(2)
+
+            current = len(ad_nodes)
+            if i % 10 == 0 or current != prev_count:
+                logger.info(f"[scrape] scroll={i + 1} unique_ads={current}")
+
+            if current == prev_count:
+                stable += 1
+                if stable >= 5:
+                    if rate_limit_hits > 0 and len(ad_nodes) == 0:
+                        raise _RateLimited(f"IP rate limited after {rate_limit_hits} hits")
+                    logger.info("[scrape] stable for 5 scrolls — end of feed")
+                    break
+            else:
+                stable = 0
+            prev_count = current
+
+    logger.info(f"[scrape] done: {len(ad_nodes)} unique ads")
+    return ad_nodes
+
+
+async def scrape_via_browser_graphql(
+    url: str,
+    max_ads: int = 2000,
+    max_scrolls: int = 80,
+) -> list[dict]:
+    """
+    Intercept FB's own GraphQL responses while scrolling.
+    On IP rate limit: rotate proxy IP (verified) and retry (up to 2 times).
+
+    Secondary fallback to scrape_via_page_fetch — still scrolls, so browser RAM grows.
+    """
+    from app.proxy import rotate_ip_verified
+
+    for attempt in range(3):
+        try:
+            return await _scrape_attempt(url, max_ads, max_scrolls)
+        except _RateLimited as exc:
+            if attempt >= 2:
+                raise RuntimeError(f"IP rate limited after {attempt + 1} attempts with rotation") from exc
+            logger.warning(f"[scrape] {exc} — rotating IP (attempt {attempt + 1}/3)")
+            if not await rotate_ip_verified():
+                raise RuntimeError("IP rate limited and rotation did not change the IP") from exc
+
+    return []
+
+
+# In-page fetch: runs inside the page's JS context so the request carries the exact
+# same TLS fingerprint + cookies/origin/referer/sec-* as FB's own Relay client.
+# Direct httpx/curl_cffi requests get rate-limited (1675004) by TLS fingerprinting;
+# this does not, because it *is* the browser making the request.
+_FETCH_SCRIPT = """
+async ({url, body, headers}) => {
+    const r = await fetch(url, {
+        method: "POST",
+        headers: headers,
+        body: body,
+        credentials: "include",
+    });
+    return {status: r.status, text: await r.text()};
+}
+"""
+
+_RATE_LIMIT_PAUSE = 30
+_MAX_RATE_LIMIT_RETRIES = 3
+
+
+async def _capture_pagination_context(page, url: str) -> dict:
+    """
+    Load url, trigger FB's first AdLibrarySearchPaginationQuery via a short scroll,
+    and return the captured tokens + base_form_data + doc_id.
+    Raises RuntimeError if the pagination query never fired.
+    """
+    captured: dict = {}
+    _, pagination_event = await _setup_token_capture(page, captured)
+    await _load_and_scroll(page, url, pagination_event)
+
+    try:
+        await asyncio.wait_for(pagination_event.wait(), timeout=20.0)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"[fetch] no AdLibrarySearchPaginationQuery fired at {url}")
+
+    if not captured.get("base_form_data"):
+        raise RuntimeError("[fetch] pagination fired but base_form_data not captured")
+
+    cookies = await page.context.cookies()
+    captured["cookies"] = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+    logger.info(f"[fetch] captured pagination context: {sorted(captured.keys())}")
+    return captured
+
+
+async def _fetch_page_in_browser(page, captured: dict, variables: dict) -> tuple[int, str]:
+    """Build the form body and execute the GraphQL POST from inside the page context."""
+    from app.graphql_client import _build_form_data
+
+    data = _build_form_data(captured, variables)
+    body = urlencode(data)
+    headers = {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-fb-friendly-name": "AdLibrarySearchPaginationQuery",
+        "x-fb-lsd": captured.get("lsd", ""),
+        "x-asbd-id": "359341",
+    }
+    result = await page.evaluate(
+        _FETCH_SCRIPT,
+        {"url": "https://www.facebook.com/api/graphql/", "body": body, "headers": headers},
+    )
+    return result["status"], result["text"]
+
+
+async def _page_fetch_attempt(url: str, max_ads: int) -> list[dict]:
+    """Single attempt: open browser, capture tokens, paginate via in-page fetch. Raises _RateLimited."""
+    from app.graphql_client import _parse_response_json, _extract_ads_and_cursor
+
+    ad_nodes: list[dict] = []
+    seen_ids: set[str] = set()
+
+    async with browser_context() as context:
+        page = await context.new_page()
+        captured = await _capture_pagination_context(page, url)
+
+        # Real variable shape FB uses (country, adType, sortData, first, v, ...).
+        template = json.loads(captured["base_form_data"]["variables"])
+        session_id = str(uuid.uuid4())
+        cursor: str | None = None  # start from page 1 to include the initial SSR cards
+        page_num = 0
+        rate_limit_hits = 0
+
+        while len(ad_nodes) < max_ads:
+            variables = {**template, "cursor": cursor, "sessionID": session_id}
+            status, text = await _fetch_page_in_browser(page, captured, variables)
+            page_num += 1
+
+            if "1675004" in text:
+                rate_limit_hits += 1
+                if rate_limit_hits > _MAX_RATE_LIMIT_RETRIES:
+                    raise _RateLimited(f"rate limited after {rate_limit_hits} hits (page {page_num})")
+                logger.warning(
+                    f"[fetch] page={page_num} rate limit 1675004 "
+                    f"(hit {rate_limit_hits}/{_MAX_RATE_LIMIT_RETRIES}) — pause {_RATE_LIMIT_PAUSE}s"
+                )
+                await asyncio.sleep(_RATE_LIMIT_PAUSE)
+                continue
+
+            if status != 200:
+                raise RuntimeError(f"[fetch] page={page_num} HTTP {status}: {text[:300]}")
+
+            try:
+                parsed = _parse_response_json(text)
+            except Exception as exc:
+                raise RuntimeError(f"[fetch] page={page_num} JSON parse error: {exc}\n{text[:400]}")
+
+            nodes, next_cursor, has_next = _extract_ads_and_cursor(parsed)
+            new_count = 0
+            for node in nodes:
+                nid = str(node.get("id") or "")
+                if nid and nid not in seen_ids:
+                    seen_ids.add(nid)
+                    ad_nodes.append(node)
+                    new_count += 1
+            logger.info(
+                f"[fetch] page={page_num} got={len(nodes)} new={new_count} "
+                f"total={len(ad_nodes)} has_next={has_next}"
+            )
+
+            if not nodes and not next_cursor:
+                logger.info("[fetch] empty page with no cursor — end of results")
+                break
+            cursor = next_cursor
+            if not has_next or not cursor:
+                logger.info(f"[fetch] pagination complete: {len(ad_nodes)} ads")
+                break
+
+            await asyncio.sleep(random.uniform(1.5, 3.5))
+
+    logger.info(f"[fetch] done: {len(ad_nodes)} unique ads over {page_num} pages")
+    return ad_nodes
+
+
+async def scrape_via_page_fetch(
+    url: str,
+    max_ads: int = 2000,
+) -> list[dict]:
+    """
+    Primary GraphQL path: load the page once, then paginate via in-page fetch()
+    without scrolling. DOM never grows, so browser RAM stays flat and there is no
+    ~1700-card scroll cap. On IP rate limit: rotate proxy IP (verified) and retry.
+    """
+    from app.proxy import rotate_ip_verified
+
+    for attempt in range(3):
+        try:
+            return await _page_fetch_attempt(url, max_ads)
+        except _RateLimited as exc:
+            if attempt >= 2:
+                raise RuntimeError(f"IP rate limited after {attempt + 1} attempts with rotation") from exc
+            logger.warning(f"[fetch] {exc} — rotating IP (attempt {attempt + 1}/3)")
+            if not await rotate_ip_verified():
+                raise RuntimeError("IP rate limited and rotation did not change the IP") from exc
+
+    return []
 
 
 def build_library_url_country_only(

@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     headless: bool = True
     scroll_max_attempts: int = 50
     scroll_pause_sec: int = 2
+    use_graphql: bool = True
+    # "fetch"    → in-page fetch() pagination, no scroll (flat RAM, no ~1700 cap)
+    # "intercept" → scroll + page.on("requestfinished") response interception (RAM grows)
+    graphql_mode: str = "fetch"
 
 
 settings = Settings()
