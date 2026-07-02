@@ -1,16 +1,19 @@
 import asyncio
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import urlparse, parse_qs
 from sqlalchemy import select, func
 from app.models import Ad, Creative
 from loguru import logger
 from app.db import AsyncSessionLocal
 from app.models import ParsingConfig, AdMediaType
-from app.browser import browser_context, build_library_url, goto_with_challenge_retry
+from app.browser import browser_context, build_library_url, goto_with_challenge_retry, extract_session_tokens
 from app.parsers.library_card import parse_card_text
 from app.parsers.library_extractor import scroll_and_collect
+from app.graphql_client import fetch_ads_graphql, map_graphql_card, TokenExpiredError
 from app.repository import upsert_ad, save_creative
 from app.storage import MediaUploader
 from app.proxy import rotate_ip, current_ip
+from app.config import settings
 
 # Shared across all concurrent configs if run_once ever parallelises process_config calls.
 # Currently one config runs at a time, so this is effectively per-config.
@@ -110,18 +113,195 @@ def split_date_range(date_from: date, date_to: date, chunk_days: int = 1) -> lis
     return chunks
 
 
-async def _scrape_single_period(
+_EMPTY_STATS = {
+    "raw": 0, "new": 0, "updated": 0, "media_ok": 0, "media_fail": 0, "errors": 0,
+    "skipped_duplicate": 0, "skipped_no_media": 0, "skipped_already_rejected": 0,
+    "skipped_phash_duplicate": 0, "removed_no_media": 0,
+}
+
+
+async def _upsert_cards_and_collect_media(
+    cards,
+    config: ParsingConfig,
+    period_tag: str,
+) -> tuple[dict, list]:
+    """Phase 1: sequential DB upserts. Returns (stats_delta, media_tasks)."""
+    stats = dict(_EMPTY_STATS)
+    seen_ids: set[str] = set()
+    media_tasks: list[tuple[int, object]] = []
+
+    for card in cards:
+        if not card.library_id:
+            continue
+        if card.library_id in seen_ids:
+            stats["skipped_duplicate"] += 1
+            continue
+        seen_ids.add(card.library_id)
+
+        if not card.image_urls and not card.video_urls and not card.poster_urls:
+            logger.info(f"[#{config.id}]{period_tag} skip {card.library_id}: no media")
+            stats["skipped_no_media"] += 1
+            continue
+
+        async with AsyncSessionLocal() as session:
+            try:
+                ad, is_new, skipped = await upsert_ad(
+                    session, card, config.country, config.keyword, config.vertical, config.config_type
+                )
+                await session.commit()
+            except Exception as e:
+                logger.warning(f"[#{config.id}]{period_tag} DB error for {card.library_id}: {e}")
+                await session.rollback()
+                stats["errors"] += 1
+                continue
+
+        if is_new:
+            stats["new"] += 1
+        elif skipped:
+            stats["skipped_already_rejected"] += 1
+        else:
+            stats["updated"] += 1
+
+        if is_new and not skipped:
+            media_tasks.append((ad.id, card))
+
+    return stats, media_tasks
+
+
+async def _run_media_phase(
+    media_tasks,
+    config: ParsingConfig,
+    uploader: MediaUploader,
+    period_tag: str,
+) -> dict:
+    """Phase 2: parallel media uploads. Returns stats_delta."""
+    stats = {}
+    logger.info(f"[#{config.id}]{period_tag} starting parallel media for {len(media_tasks)} new ads")
+    results = await asyncio.gather(
+        *[_upload_card_media(uploader, config.id, ad_id, card) for ad_id, card in media_tasks],
+        return_exceptions=True,
+    )
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning(f"[#{config.id}]{period_tag} media task error: {r}")
+            stats["errors"] = stats.get("errors", 0) + 1
+        else:
+            for k, v in r.items():
+                stats[k] = stats.get(k, 0) + v
+    return stats
+
+
+def _url_to_graphql_variables(url: str, config: ParsingConfig) -> dict:
+    """Parse a build_library_url() result back into GraphQL variables dict."""
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+
+    def get(key, default=None):
+        vals = qs.get(key, [])
+        return vals[0] if vals else default
+
+    def get_indexed(prefix):
+        result = []
+        for k, vals in sorted(qs.items()):
+            if k.startswith(f"{prefix}[") and k.endswith("]"):
+                result.extend(vals)
+        return result
+
+    date_min = get("start_date[min]")
+    date_max = get("start_date[max]")
+
+    return {
+        "activeStatus": get("active_status", "all"),
+        "adType": (get("ad_type", "all") or "all").upper(),
+        "bylines": [],
+        "collationToken": None,
+        "contentLanguages": get_indexed("content_languages"),
+        "countries": [config.country],
+        "cursor": None,
+        "excludeIDs": None,
+        "first": 30,
+        "isTargetedCountry": get("is_targeted_country") == "true",
+        "location": None,
+        "mediaType": get("media_type", "all"),
+        "multiCountryFilterMode": None,
+        "pageIDs": [],
+        "potentialReachInput": None,
+        "publisherPlatforms": get_indexed("publisher_platforms"),
+        "queryString": get("q", "⠀"),
+        "regions": None,
+        "searchType": "keyword_unordered",
+        "sessionID": None,
+        "sortData": {
+            "mode": get("sort_data[mode]", "total_impressions"),
+            "direction": get("sort_data[direction]", "desc"),
+        },
+        "source": None,
+        "startDate": {"min": date_min, "max": date_max} if date_min or date_max else None,
+        "v": "054026",
+        "viewAllPageID": "0",
+    }
+
+
+async def _scrape_single_period_graphql(
     url: str,
     config: ParsingConfig,
     uploader: MediaUploader,
     period_tag: str = "",
 ) -> dict:
-    """Open browser, scrape one URL, close browser, upsert to DB, upload media. Returns stats."""
-    stats = {
-        "raw": 0, "new": 0, "updated": 0, "media_ok": 0, "media_fail": 0, "errors": 0,
-        "skipped_duplicate": 0, "skipped_no_media": 0, "skipped_already_rejected": 0,
-        "skipped_phash_duplicate": 0, "removed_no_media": 0,
-    }
+    """GraphQL path: extract tokens once, then paginate via HTTP without browser."""
+    stats = dict(_EMPTY_STATS)
+    try:
+        variables = _url_to_graphql_variables(url, config)
+        proxy_url = settings.proxy_http_gateway
+
+        tokens = None
+        raw_nodes = None
+        for refresh_attempt in range(3):
+            try:
+                if tokens is None:
+                    logger.info(f"[#{config.id}]{period_tag} extracting session tokens (attempt {refresh_attempt + 1})")
+                    tokens = await extract_session_tokens(url)
+                raw_nodes = await fetch_ads_graphql(tokens, variables, proxy_url)
+                break
+            except TokenExpiredError:
+                logger.warning(f"[#{config.id}]{period_tag} token expired, re-extracting (attempt {refresh_attempt + 1}/3)")
+                tokens = None
+            except Exception as exc:
+                logger.error(f"[#{config.id}]{period_tag} GraphQL fetch error: {exc}")
+                stats["errors"] += 1
+                return stats
+
+        if raw_nodes is None:
+            logger.error(f"[#{config.id}]{period_tag} failed to fetch ads after token refresh retries")
+            stats["errors"] += 1
+            return stats
+
+        stats["raw"] = len(raw_nodes)
+
+        cards = [map_graphql_card(node) for node in raw_nodes]
+        phase1, media_tasks = await _upsert_cards_and_collect_media(cards, config, period_tag)
+        for k, v in phase1.items():
+            stats[k] = stats.get(k, 0) + v
+
+        phase2 = await _run_media_phase(media_tasks, config, uploader, period_tag)
+        for k, v in phase2.items():
+            stats[k] = stats.get(k, 0) + v
+
+    except Exception as exc:
+        logger.error(f"[#{config.id}]{period_tag} Fatal GraphQL error: {exc}")
+        stats["errors"] += 1
+
+    return stats
+
+
+async def _scrape_single_period_playwright(
+    url: str,
+    config: ParsingConfig,
+    uploader: MediaUploader,
+    period_tag: str = "",
+) -> dict:
+    """Playwright scroll path (fallback)."""
+    stats = dict(_EMPTY_STATS)
     try:
         async with browser_context() as context:
             page = await context.new_page()
@@ -144,70 +324,46 @@ async def _scrape_single_period(
             )
             stats["raw"] = len(raw_cards)
 
-        # Phase 1: sequential DB upserts (browser already closed — memory freed)
-        seen_ids: set[str] = set()
-        media_tasks: list[tuple[int, object]] = []
-
+        cards = []
         for raw in raw_cards:
             card = parse_card_text(raw["text"])
-            if not card.library_id:
-                continue
-            if card.library_id in seen_ids:
-                stats["skipped_duplicate"] += 1
-                continue
-            seen_ids.add(card.library_id)
             card.image_urls = [img["src"] for img in raw["images"]]
             card.video_urls = [v["src"] for v in raw["videos"] if v["src"]]
             card.poster_urls = [v["poster"] for v in raw["videos"] if v["poster"]]
             card.page_url = raw["page_url"]
             card.link_url = raw["external_url"]
+            cards.append(card)
 
-            if not card.image_urls and not card.video_urls and not card.poster_urls:
-                logger.info(f"[#{config.id}]{period_tag} skip {card.library_id}: no media in card")
-                stats["skipped_no_media"] += 1
-                continue
+        phase1, media_tasks = await _upsert_cards_and_collect_media(cards, config, period_tag)
+        for k, v in phase1.items():
+            stats[k] = stats.get(k, 0) + v
 
-            async with AsyncSessionLocal() as session:
-                try:
-                    ad, is_new, skipped = await upsert_ad(
-                        session, card, config.country, config.keyword, config.vertical, config.config_type
-                    )
-                    await session.commit()
-                    if is_new:
-                        stats["new"] += 1
-                    elif skipped:
-                        stats["skipped_already_rejected"] += 1
-                    else:
-                        stats["updated"] += 1
-                except Exception as e:
-                    logger.warning(f"[#{config.id}]{period_tag} DB error for {card.library_id}: {e}")
-                    await session.rollback()
-                    stats["errors"] += 1
-                    continue
+        phase2 = await _run_media_phase(media_tasks, config, uploader, period_tag)
+        for k, v in phase2.items():
+            stats[k] = stats.get(k, 0) + v
 
-            if is_new and not skipped:
-                media_tasks.append((ad.id, card))
-
-        # Phase 2: parallel media downloads
-        logger.info(f"[#{config.id}]{period_tag} starting parallel media for {len(media_tasks)} new ads")
-        results = await asyncio.gather(
-            *[_upload_card_media(uploader, config.id, ad_id, card)
-              for ad_id, card in media_tasks],
-            return_exceptions=True,
-        )
-        for r in results:
-            if isinstance(r, Exception):
-                logger.warning(f"[#{config.id}]{period_tag} media task error: {r}")
-                stats["errors"] += 1
-            else:
-                for k, v in r.items():
-                    stats[k] = stats.get(k, 0) + v
-
-    except Exception as e:
-        logger.error(f"[#{config.id}]{period_tag} Fatal error: {e}")
+    except Exception as exc:
+        logger.error(f"[#{config.id}]{period_tag} Fatal Playwright error: {exc}")
         stats["errors"] += 1
 
     return stats
+
+
+async def _scrape_single_period(
+    url: str,
+    config: ParsingConfig,
+    uploader: MediaUploader,
+    period_tag: str = "",
+) -> dict:
+    """Dispatch to GraphQL or Playwright path based on settings.use_graphql."""
+    if settings.use_graphql:
+        try:
+            return await _scrape_single_period_graphql(url, config, uploader, period_tag)
+        except Exception as exc:
+            logger.warning(
+                f"[#{config.id}]{period_tag} GraphQL path failed: {exc} — falling back to Playwright"
+            )
+    return await _scrape_single_period_playwright(url, config, uploader, period_tag)
 
 
 async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict:
