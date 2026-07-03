@@ -3,8 +3,9 @@ import { useQuery, useInfiniteQuery } from '@tanstack/react-query'
 import { clientApi } from '../../api/client'
 import type { Ad } from '../../api/client'
 import { AdDrawer } from '../../components/client/AdDrawer'
+import { DateRangePicker } from '../../components/client/DateRangePicker'
 import { countryFlag } from '../../flags'
-import { Settings, SlidersHorizontal, ChevronDown, Search } from 'lucide-react'
+import { Settings, SlidersHorizontal, ChevronDown, Search, Calendar, Download } from 'lucide-react'
 
 const PAGE_SIZE = 40
 
@@ -18,6 +19,21 @@ function mediaUrl(s3Url: string | null): string | null {
 function adsLibraryUrl(pageId: string | null): string | null {
   if (!pageId) return null
   return `https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&view_all_page_id=${pageId}`
+}
+
+function fmtDate(s: string | null | undefined): string {
+  if (!s) return '—'
+  return new Date(s).toLocaleDateString('ru-RU')
+}
+
+function downloadFile(url: string, name = '') {
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.target = '_blank'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -37,10 +53,14 @@ type Facets = {
 type Filters = {
   country: string
   search: string
+  searchMode: string
+  countryCount: string
   startedFrom: string
+  startedTo: string
   daysMin: string
   daysMax: string
   vertical: string
+  partners: string[]
   sort: string
   isActive: string
   // Ad settings card
@@ -66,10 +86,14 @@ type Filters = {
 const emptyFilters: Filters = {
   country: '',
   search: '',
+  searchMode: 'exact',
+  countryCount: '',
   startedFrom: '',
+  startedTo: '',
   daysMin: '',
   daysMax: '',
   vertical: '',
+  partners: [],
   sort: 'newest',
   isActive: '',
   mediaType: '',
@@ -89,6 +113,23 @@ const emptyFilters: Filters = {
   ipQuery: '',
   language: '',
 }
+
+// Вертикали. active=false → заглушка «в разработке».
+const VERTICALS: { key: string; label: string; active: boolean }[] = [
+  { key: 'nutra', label: 'Nutra', active: true },
+  { key: 'gambling', label: 'Gambling', active: true },
+  { key: 'apps', label: 'Apps', active: false },
+  { key: 'ecommerce', label: 'E-commerce', active: false },
+]
+
+// Подкатегории (захардкожены — фильтр по подкатегории появится с парсером).
+const VERTICAL_CHIPS = [
+  'All', 'Uncategorized', 'Aviator', 'Bomb defuse', 'Book of dead', 'Book of ra',
+  'Chicken road', 'Chicken subway', 'Coin strike', 'Energy coins', 'Energy joker',
+  'Fire joker', 'Gates of olympus', 'Joker stoker', 'Jokers jewels', 'Penalty duel',
+  'Pink joker', 'Plinko', 'Royal joker', 'Sugar rush', 'Sun of egypt', 'Sweet bonanza',
+  'Tower rush',
+]
 
 // ─── Small components ─────────────────────────────────────────────────────────
 
@@ -303,6 +344,8 @@ export function ClientFeedPage() {
   const [draft, setDraft] = useState<Filters>(emptyFilters)
   const [applied, setApplied] = useState<Filters>(emptyFilters)
   const [showSettings, setShowSettings] = useState(false)
+  const [openVertical, setOpenVertical] = useState<string | null>(null)
+  const [subcat, setSubcat] = useState('All')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
 
@@ -311,13 +354,31 @@ export function ClientFeedPage() {
     queryFn: async () => (await clientApi.get<Facets>('/feed/facets')).data,
   })
 
+  const { data: partnersData } = useQuery({
+    queryKey: ['feed-partners'],
+    queryFn: async () =>
+      (await clientApi.get<{ partners: string[] }>('/feed/partners')).data,
+  })
+
+  const { data: vertCounts } = useQuery({
+    queryKey: ['feed-vertical-counts'],
+    queryFn: async () =>
+      (await clientApi.get<{ counts: Record<string, number> }>('/feed/vertical-counts')).data,
+  })
+
   const baseParams = useMemo(() => {
     const p = new URLSearchParams()
     p.set('sort', applied.sort)
     if (applied.country) p.set('country', applied.country)
     if (applied.vertical) p.set('vertical', applied.vertical)
-    if (applied.search.trim()) p.set('search', applied.search.trim())
+    if (applied.search.trim()) {
+      p.set('search', applied.search.trim())
+      p.set('search_mode', applied.searchMode)
+    }
+    applied.partners.forEach((pt) => p.append('partner', pt))
+    if (applied.countryCount) p.set('country_count', applied.countryCount)
     if (applied.startedFrom) p.set('started_from', applied.startedFrom)
+    if (applied.startedTo) p.set('started_to', applied.startedTo)
     if (applied.daysMin) p.set('days_active_min', applied.daysMin)
     if (applied.daysMax) p.set('days_active_max', applied.daysMax)
     // Ad settings
@@ -365,6 +426,13 @@ export function ClientFeedPage() {
 
   const ads = useMemo(() => data?.pages.flat() ?? [], [data])
 
+  const { data: countData } = useQuery({
+    queryKey: ['feed-count', baseParams.toString()],
+    queryFn: async () =>
+      (await clientApi.get<{ total: number }>(`/feed/count?${baseParams.toString()}`)).data,
+  })
+  const total = countData?.total
+
   useEffect(() => {
     const el = sentinelRef.current
     if (!el) return
@@ -399,15 +467,17 @@ export function ClientFeedPage() {
       <div className={`flex-1 transition-all ${selectedId ? 'lg:mr-[360px]' : ''}`}>
         <h1 className="text-2xl font-bold mb-4">
           Объявления{' '}
-          <span className="text-gray-400 text-base font-normal">({ads.length})</span>
+          <span className="text-gray-400 text-base font-normal">
+            ({total != null ? total.toLocaleString('ru-RU') : ads.length})
+          </span>
         </h1>
 
         {/* ── Filter panel ── */}
         <div className="bg-white rounded-xl shadow p-4 mb-3">
 
-          {/* Top row: 7 fields */}
+          {/* Top row: single-line filter bar */}
           <div className="flex flex-wrap gap-3 items-end">
-            <div className="flex-1 min-w-[180px]">
+            <div className="flex-1 min-w-[160px]">
               <label className="block text-xs text-gray-500 mb-1">Поиск</label>
               <div className="relative">
                 <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
@@ -422,6 +492,21 @@ export function ClientFeedPage() {
             </div>
 
             <div>
+              <label className="block text-xs text-gray-500 mb-1">Тип поиска</label>
+              <div className="relative">
+                <select
+                  value={draft.searchMode}
+                  onChange={(e) => set({ searchMode: e.target.value })}
+                  className="appearance-none px-3 py-2 pr-8 border rounded-lg text-sm bg-white"
+                >
+                  <option value="exact">Точный</option>
+                  <option value="broad">Широкий</option>
+                </select>
+                <ChevronDown className="absolute right-2.5 top-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+              </div>
+            </div>
+
+            <div>
               <label className="block text-xs text-gray-500 mb-1">Страны</label>
               <CountryDropdown
                 options={facets?.countries ?? []}
@@ -431,34 +516,90 @@ export function ClientFeedPage() {
             </div>
 
             <div>
+              <label className="block text-xs text-gray-500 mb-1" title="Число стран показа (по ЕС-данным)">
+                Кол-во стран
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={draft.countryCount}
+                onChange={(e) => set({ countryCount: e.target.value })}
+                placeholder="—"
+                className="w-20 px-3 py-2 border rounded-lg text-sm"
+              />
+            </div>
+
+            <div>
               <label className="block text-xs text-gray-500 mb-1">Дата создания</label>
-              <input
-                type="date"
-                value={draft.startedFrom}
-                onChange={(e) => set({ startedFrom: e.target.value })}
-                className="px-3 py-2 border rounded-lg text-sm"
+              <DateRangePicker
+                from={draft.startedFrom}
+                to={draft.startedTo}
+                onChange={(f, t) => set({ startedFrom: f, startedTo: t })}
               />
             </div>
 
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Активность дней от</label>
-              <input
-                type="number"
-                min="0"
-                value={draft.daysMin}
-                onChange={(e) => set({ daysMin: e.target.value })}
-                className="w-20 px-3 py-2 border rounded-lg text-sm"
-              />
+              <label className="block text-xs text-gray-500 mb-1">Активность</label>
+              <div className="relative">
+                <select
+                  value={draft.isActive}
+                  onChange={(e) => set({ isActive: e.target.value })}
+                  className="appearance-none px-3 py-2 pr-8 border rounded-lg text-sm bg-white"
+                >
+                  <option value="">Все</option>
+                  <option value="true">Активные</option>
+                  <option value="false">Неактивные</option>
+                </select>
+                <ChevronDown className="absolute right-2.5 top-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+              </div>
             </div>
 
             <div>
-              <label className="block text-xs text-gray-500 mb-1">до</label>
-              <input
-                type="number"
-                min="0"
-                value={draft.daysMax}
-                onChange={(e) => set({ daysMax: e.target.value })}
-                className="w-20 px-3 py-2 border rounded-lg text-sm"
+              <label className="block text-xs text-gray-500 mb-1">Активность дней</label>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.daysMin}
+                  onChange={(e) => set({ daysMin: e.target.value })}
+                  placeholder="от"
+                  className="w-16 px-2 py-2 border rounded-lg text-sm"
+                />
+                <span className="text-gray-400 text-xs">–</span>
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.daysMax}
+                  onChange={(e) => set({ daysMax: e.target.value })}
+                  placeholder="до"
+                  className="w-16 px-2 py-2 border rounded-lg text-sm"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Сортировка</label>
+              <div className="relative">
+                <select
+                  value={draft.sort}
+                  onChange={(e) => set({ sort: e.target.value })}
+                  className="appearance-none px-3 py-2 pr-8 border rounded-lg text-sm bg-white"
+                >
+                  <option value="newest">Сначала свежие</option>
+                  <option value="oldest">Сначала старые</option>
+                  <option value="days_desc">Дольше крутят</option>
+                  <option value="days_asc">Меньше крутят</option>
+                </select>
+                <ChevronDown className="absolute right-2.5 top-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+              </div>
+            </div>
+
+            <div className="min-w-[140px]">
+              <label className="block text-xs text-gray-500 mb-1">Партнёрка</label>
+              <MultiSelectDropdown
+                options={partnersData?.partners ?? []}
+                selected={draft.partners}
+                onChange={(partners) => set({ partners })}
               />
             </div>
 
@@ -481,38 +622,12 @@ export function ClientFeedPage() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Сортировка</label>
-              <div className="relative">
-                <select
-                  value={draft.sort}
-                  onChange={(e) => set({ sort: e.target.value })}
-                  className="appearance-none px-3 py-2 pr-8 border rounded-lg text-sm bg-white"
-                >
-                  <option value="newest">Сначала свежие</option>
-                  <option value="oldest">Сначала старые</option>
-                  <option value="days_desc">Дольше крутят</option>
-                  <option value="days_asc">Меньше крутят</option>
-                </select>
-                <ChevronDown className="absolute right-2.5 top-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Активность</label>
-              <div className="relative">
-                <select
-                  value={draft.isActive}
-                  onChange={(e) => set({ isActive: e.target.value })}
-                  className="appearance-none px-3 py-2 pr-8 border rounded-lg text-sm bg-white"
-                >
-                  <option value="">Все</option>
-                  <option value="true">Активные</option>
-                  <option value="false">Неактивные</option>
-                </select>
-                <ChevronDown className="absolute right-2.5 top-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
-              </div>
-            </div>
+            <button
+              onClick={apply}
+              className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
+            >
+              Найти
+            </button>
           </div>
 
           {/* Toggle */}
@@ -708,6 +823,68 @@ export function ClientFeedPage() {
             </div>
           )}
 
+          {/* Вертикали */}
+          <div className="mt-3 pt-3 border-t">
+            <div className="flex flex-wrap gap-2">
+              {VERTICALS.map((v) => {
+                const selected = draft.vertical === v.key
+                const cnt = vertCounts?.counts?.[v.key]
+                return (
+                  <button
+                    key={v.key}
+                    type="button"
+                    disabled={!v.active}
+                    onClick={() => {
+                      set({ vertical: selected ? '' : v.key })
+                      setOpenVertical(openVertical === v.key ? null : v.key)
+                      setSubcat('All')
+                    }}
+                    title={v.active ? undefined : 'В разработке'}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border transition ${
+                      !v.active
+                        ? 'opacity-50 cursor-not-allowed bg-gray-50 text-gray-400'
+                        : selected
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white hover:border-gray-400'
+                    }`}
+                  >
+                    {v.label}
+                    {!v.active && <span className="text-[10px]">🛠</span>}
+                    {v.active && cnt != null && (
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                          selected ? 'bg-white/20' : 'bg-gray-100 text-gray-500'
+                        }`}
+                      >
+                        {cnt.toLocaleString('ru-RU')}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Чипсы-подкатегории */}
+            {openVertical && VERTICALS.find((v) => v.key === openVertical)?.active && (
+              <div className="flex flex-wrap gap-1.5 mt-3">
+                {VERTICAL_CHIPS.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setSubcat(c)}
+                    className={`px-2.5 py-1 rounded-full text-xs border transition ${
+                      subcat === c
+                        ? 'bg-blue-50 text-blue-700 border-blue-200'
+                        : 'bg-white text-gray-600 hover:border-gray-300'
+                    }`}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Actions */}
           <div className="flex gap-2 pt-3 mt-3 border-t">
             <button
@@ -747,6 +924,12 @@ export function ClientFeedPage() {
             const isVideo = cre?.media_type?.toLowerCase() === 'video'
             const isSelected = selectedId === ad.id
             const pageFbUrl = adsLibraryUrl(ad.page_id)
+            const days = Math.max(1, ad.days_active)
+            const usedIn = ad.used_in_ads_count ?? ad.duplicates_count
+            const dayTip =
+              `Последний раз объявление было активно: ${fmtDate(ad.last_seen_at)}\n` +
+              `Всего объявление было активным: ${days}\n` +
+              `Первый раз объявление получено: ${fmtDate(ad.first_seen_at)}`
 
             return (
               <div
@@ -756,7 +939,7 @@ export function ClientFeedPage() {
                   isSelected ? 'ring-2 ring-blue-500 shadow-md' : 'hover:shadow-md'
                 }`}
               >
-                <div className="w-full aspect-square bg-gray-100 flex items-center justify-center overflow-hidden">
+                <div className="group relative w-full aspect-square bg-gray-100 flex items-center justify-center overflow-hidden">
                   {url && isVideo ? (
                     <video
                       src={url}
@@ -774,10 +957,56 @@ export function ClientFeedPage() {
                   ) : (
                     <div className="text-gray-300 text-sm">нет медиа</div>
                   )}
+
+                  {/* Кнопка скачивания (слева сверху, на hover) */}
+                  {url && (
+                    <button
+                      type="button"
+                      title="Скачать креатив"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        downloadFile(url, `ad-${ad.id}`)
+                      }}
+                      className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow hover:bg-blue-700"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+
+                  {/* Видео: бейдж + плеер по центру */}
+                  {isVideo && (
+                    <>
+                      <div className="absolute top-2 right-2 flex items-center gap-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded">
+                        <span>▶</span>
+                        <span>видео</span>
+                      </div>
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="w-10 h-10 rounded-full bg-black/40 flex items-center justify-center">
+                          <span className="text-white text-lg leading-none">▶</span>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Бейдж дня + статус (справа внизу) */}
+                  <div
+                    className="absolute bottom-2 right-2 flex items-center gap-1.5"
+                    title={dayTip}
+                  >
+                    <div className="flex items-center gap-1 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded">
+                      <Calendar className="w-3 h-3" />
+                      <span>{days} день</span>
+                    </div>
+                    <span
+                      className={`w-2.5 h-2.5 rounded-full border border-white/50 ${
+                        ad.is_active ? 'bg-green-500' : 'bg-orange-500'
+                      }`}
+                    />
+                  </div>
                 </div>
 
                 <div className="p-3 flex-1 flex flex-col">
-                  <div className="flex items-center justify-between mb-1 text-sm">
+                  <div className="flex items-center mb-1 text-sm">
                     <span className="font-medium truncate flex items-center gap-2 min-w-0">
                       {pageFbUrl ? (
                         <a
@@ -792,9 +1021,12 @@ export function ClientFeedPage() {
                       ) : (
                         <span className="truncate">{ad.page_name || '—'}</span>
                       )}
-                      {ad.duplicates_count > 0 && (
-                        <span className="shrink-0 text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-normal">
-                          +{ad.duplicates_count}
+                      {usedIn > 0 && (
+                        <span
+                          className="shrink-0 text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-normal"
+                          title={`Это медиа встречается ещё в ${usedIn} объявлениях`}
+                        >
+                          +{usedIn}
                         </span>
                       )}
                       {ad.partner && (
@@ -803,16 +1035,9 @@ export function ClientFeedPage() {
                         </span>
                       )}
                     </span>
-                    <span
-                      className={`shrink-0 ml-2 text-xs ${
-                        ad.is_active ? 'text-green-600' : 'text-gray-400'
-                      }`}
-                    >
-                      {ad.is_active ? 'Active' : 'Inactive'}
-                    </span>
                   </div>
                   <div className="text-xs text-gray-500">
-                    {countryFlag(ad.country)} {ad.country} · {ad.keyword} · {ad.days_active}d
+                    {countryFlag(ad.country)} {ad.country} · {ad.keyword}
                   </div>
                 </div>
               </div>

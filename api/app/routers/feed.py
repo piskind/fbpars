@@ -1,7 +1,7 @@
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_, and_, distinct, text, String
+from sqlalchemy import select, func, or_, and_, distinct, text, String, tuple_, cast
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,16 @@ from app.schemas import AdOut
 router = APIRouter(prefix="/api/feed", tags=["feed"])
 
 
+def _host_from_url(u: str | None) -> str | None:
+    if not u:
+        return None
+    u = u.strip()
+    if "://" in u:
+        u = u.split("://", 1)[1]
+    u = u.split("/", 1)[0].split("?", 1)[0]
+    return u or None
+
+
 def _normalize_domain(d: str | None) -> str | None:
     if not d:
         return None
@@ -30,6 +40,129 @@ def _normalize_domain(d: str | None) -> str | None:
     if "/" in d:
         d = d.split("/", 1)[0]
     return d or None
+
+
+# Все фильтры /feed в одном месте — используются и списком, и счётчиком.
+def _apply_ad_filters(
+    stmt,
+    *,
+    country=None,
+    countries=None,
+    keyword=None,
+    vertical=None,
+    media_type=None,
+    cta=None,
+    platforms=None,
+    domain=None,
+    page_id=None,
+    page_name=None,
+    link_contains=None,
+    language=None,
+    lead_form=None,
+    app_store=None,
+    ecom_platform=None,
+    ip=None,
+    search=None,
+    search_mode="exact",
+    partner=None,
+    country_count=None,
+    is_active=None,
+    days_active_min=None,
+    days_active_max=None,
+    started_from=None,
+    started_to=None,
+    last_seen_from=None,
+    last_seen_to=None,
+    reach_min=None,
+    spend_min=None,
+    eu_country=None,
+    used_in_ads_min=None,
+):
+    if countries:
+        stmt = stmt.where(Ad.country.in_(countries))
+    elif country:
+        stmt = stmt.where(Ad.country == country)
+    if keyword:
+        stmt = stmt.where(Ad.keyword == keyword)
+    if vertical:
+        stmt = stmt.where(Ad.vertical == vertical)
+    if media_type:
+        stmt = stmt.where(Ad.media_type == media_type)
+    if cta:
+        stmt = stmt.where(Ad.cta_text.ilike(f"%{cta}%"))
+    if platforms:
+        stmt = stmt.where(Ad.platforms.op("&&")(platforms))  # array overlap
+    if domain:
+        nd = _normalize_domain(domain)
+        if nd:
+            stmt = stmt.where(or_(
+                Ad.display_url.ilike(f"%{nd}%"),
+                Ad.link_url.ilike(f"%{nd}%"),
+            ))
+    if page_id:
+        stmt = stmt.where(Ad.page_id == page_id)
+    if page_name:
+        stmt = stmt.where(Ad.page_name.ilike(f"%{page_name}%"))
+    if link_contains:
+        stmt = stmt.where(Ad.link_url.ilike(f"%{link_contains}%"))
+    if language:
+        stmt = stmt.where(Ad.language == language)
+    if lead_form is not None:
+        stmt = stmt.where(Ad.lead_form.is_(lead_form))
+    if app_store:
+        stmt = stmt.where(Ad.app_store == app_store)
+    if ecom_platform:
+        stmt = stmt.where(Ad.ecom_platform == ecom_platform)
+    if ip:
+        stmt = stmt.where(Ad.ip == ip)
+    if partner:
+        # ads связываются с partner через parsing_configs (keyword, country)
+        cfg_sub = (
+            select(ParsingConfig.keyword, ParsingConfig.country)
+            .where(ParsingConfig.partner.in_(partner))
+        )
+        stmt = stmt.where(tuple_(Ad.keyword, Ad.country).in_(cfg_sub))
+    if country_count is not None:
+        # число стран показа берём из eu_countries (доступно только для ЕС-данных)
+        stmt = stmt.where(
+            func.coalesce(func.array_length(Ad.eu_countries, 1), 0) == country_count
+        )
+    if is_active is not None:
+        stmt = stmt.where(Ad.is_active.is_(is_active))
+    if days_active_min is not None:
+        stmt = stmt.where(Ad.days_active >= days_active_min)
+    if days_active_max is not None:
+        stmt = stmt.where(Ad.days_active <= days_active_max)
+    if started_from:
+        stmt = stmt.where(Ad.started_at >= started_from)
+    if started_to:
+        stmt = stmt.where(Ad.started_at <= started_to)
+    if last_seen_from:
+        stmt = stmt.where(Ad.last_seen_at >= last_seen_from)
+    if last_seen_to:
+        stmt = stmt.where(Ad.last_seen_at <= last_seen_to)
+    if search:
+        fields = [Ad.body, Ad.title, Ad.caption, Ad.page_name, Ad.library_id, Ad.display_url]
+        if search_mode == "broad":
+            # широкий: совпадает любое слово из запроса
+            words = [w for w in search.split() if w]
+            groups = [or_(*[f.ilike(f"%{w}%") for f in fields]) for w in words] or [
+                or_(*[f.ilike(f"%{search}%") for f in fields])
+            ]
+            stmt = stmt.where(or_(*groups))
+        else:
+            # точный: вся фраза как подстрока
+            like = f"%{search}%"
+            stmt = stmt.where(or_(*[f.ilike(like) for f in fields]))
+    if reach_min is not None:
+        stmt = stmt.where(Ad.reach >= reach_min)
+    if spend_min is not None:
+        stmt = stmt.where(Ad.spend_estimate >= spend_min)
+    if eu_country:
+        stmt = stmt.where(Ad.eu_countries.op("&&")(eu_country))
+    if used_in_ads_min is not None:
+        stmt = stmt.where(Ad.used_in_ads_count >= used_in_ads_min)
+    return stmt
 
 
 @router.get("", response_model=list[AdOut])
@@ -51,6 +184,9 @@ async def list_feed(
     ecom_platform: str | None = Query(None),
     ip: str | None = Query(None),
     search: str | None = Query(None),
+    search_mode: str = Query("exact", regex="^(exact|broad)$"),
+    partner: list[str] | None = Query(None),
+    country_count: int | None = Query(None),
     is_active: bool | None = Query(None),
     days_active_min: int | None = Query(None),
     days_active_max: int | None = Query(None),
@@ -75,72 +211,20 @@ async def list_feed(
         .options(selectinload(Ad.creatives))
     )
 
-    if countries:
-        stmt = stmt.where(Ad.country.in_(countries))
-    elif country:
-        stmt = stmt.where(Ad.country == country)
-    if keyword:
-        stmt = stmt.where(Ad.keyword == keyword)
-    if vertical:
-        stmt = stmt.where(Ad.vertical == vertical)
-    if media_type:
-        stmt = stmt.where(Ad.media_type == media_type)
-    if cta:
-        stmt = stmt.where(Ad.cta_text.ilike(f"%{cta}%"))
-    if platforms:
-        stmt = stmt.where(Ad.platforms.op("&&")(platforms))  # array overlap
-    if domain:
-        nd = _normalize_domain(domain)
-        if nd:
-            stmt = stmt.where(Ad.display_url.ilike(f"%{nd}%"))
-    if page_id:
-        stmt = stmt.where(Ad.page_id == page_id)
-    if page_name:
-        stmt = stmt.where(Ad.page_name.ilike(f"%{page_name}%"))
-    if link_contains:
-        stmt = stmt.where(Ad.link_url.ilike(f"%{link_contains}%"))
-    if language:
-        stmt = stmt.where(Ad.language == language)
-    if lead_form is not None:
-        stmt = stmt.where(Ad.lead_form.is_(lead_form))
-    if app_store:
-        stmt = stmt.where(Ad.app_store == app_store)
-    if ecom_platform:
-        stmt = stmt.where(Ad.ecom_platform == ecom_platform)
-    if ip:
-        stmt = stmt.where(Ad.ip == ip)
-    if is_active is not None:
-        stmt = stmt.where(Ad.is_active.is_(is_active))
-    if days_active_min is not None:
-        stmt = stmt.where(Ad.days_active >= days_active_min)
-    if days_active_max is not None:
-        stmt = stmt.where(Ad.days_active <= days_active_max)
-    if started_from:
-        stmt = stmt.where(Ad.started_at >= started_from)
-    if started_to:
-        stmt = stmt.where(Ad.started_at <= started_to)
-    if last_seen_from:
-        stmt = stmt.where(Ad.last_seen_at >= last_seen_from)
-    if last_seen_to:
-        stmt = stmt.where(Ad.last_seen_at <= last_seen_to)
-    if search:
-        like = f"%{search}%"
-        stmt = stmt.where(or_(
-            Ad.body.ilike(like),
-            Ad.title.ilike(like),
-            Ad.caption.ilike(like),
-            Ad.page_name.ilike(like),
-            Ad.library_id.ilike(like),
-            Ad.display_url.ilike(like),
-        ))
-    if reach_min is not None:
-        stmt = stmt.where(Ad.reach >= reach_min)
-    if spend_min is not None:
-        stmt = stmt.where(Ad.spend_estimate >= spend_min)
-    if eu_country:
-        stmt = stmt.where(Ad.eu_countries.op("&&")(eu_country))
-    if used_in_ads_min is not None:
-        stmt = stmt.where(Ad.used_in_ads_count >= used_in_ads_min)
+    stmt = _apply_ad_filters(
+        stmt,
+        country=country, countries=countries, keyword=keyword, vertical=vertical,
+        media_type=media_type, cta=cta, platforms=platforms, domain=domain,
+        page_id=page_id, page_name=page_name, link_contains=link_contains,
+        language=language, lead_form=lead_form, app_store=app_store,
+        ecom_platform=ecom_platform, ip=ip, search=search, search_mode=search_mode,
+        partner=partner, country_count=country_count, is_active=is_active,
+        days_active_min=days_active_min, days_active_max=days_active_max,
+        started_from=started_from, started_to=started_to,
+        last_seen_from=last_seen_from, last_seen_to=last_seen_to,
+        reach_min=reach_min, spend_min=spend_min, eu_country=eu_country,
+        used_in_ads_min=used_in_ads_min,
+    )
 
     if sort == "newest":
         stmt = stmt.order_by(Ad.first_seen_at.desc())
@@ -266,6 +350,117 @@ async def list_feed(
     return items
 
 
+@router.get("/count")
+async def feed_count(
+    country: str | None = Query(None),
+    countries: list[str] | None = Query(None),
+    keyword: str | None = Query(None),
+    vertical: str | None = Query(None),
+    media_type: str | None = Query(None),
+    cta: str | None = Query(None),
+    platforms: list[str] | None = Query(None),
+    domain: str | None = Query(None),
+    page_id: str | None = Query(None),
+    page_name: str | None = Query(None),
+    link_contains: str | None = Query(None),
+    language: str | None = Query(None),
+    lead_form: bool | None = Query(None),
+    app_store: str | None = Query(None),
+    ecom_platform: str | None = Query(None),
+    ip: str | None = Query(None),
+    search: str | None = Query(None),
+    search_mode: str = Query("exact", regex="^(exact|broad)$"),
+    partner: list[str] | None = Query(None),
+    country_count: int | None = Query(None),
+    is_active: bool | None = Query(None),
+    days_active_min: int | None = Query(None),
+    days_active_max: int | None = Query(None),
+    started_from: datetime | None = Query(None),
+    started_to: datetime | None = Query(None),
+    last_seen_from: datetime | None = Query(None),
+    last_seen_to: datetime | None = Query(None),
+    reach_min: int | None = Query(None),
+    spend_min: int | None = Query(None),
+    eu_country: list[str] | None = Query(None),
+    used_in_ads_min: int | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+    _: ClientUser = Depends(get_current_client),
+):
+    """Кол-во объявлений после фильтров (с учётом phash-дедупликации)."""
+    base = (
+        select(Ad.id)
+        .join(ModerationEntry, ModerationEntry.ad_id == Ad.id)
+        .where(ModerationEntry.status == ModerationStatus.APPROVED)
+    )
+    base = _apply_ad_filters(
+        base,
+        country=country, countries=countries, keyword=keyword, vertical=vertical,
+        media_type=media_type, cta=cta, platforms=platforms, domain=domain,
+        page_id=page_id, page_name=page_name, link_contains=link_contains,
+        language=language, lead_form=lead_form, app_store=app_store,
+        ecom_platform=ecom_platform, ip=ip, search=search, search_mode=search_mode,
+        partner=partner, country_count=country_count, is_active=is_active,
+        days_active_min=days_active_min, days_active_max=days_active_max,
+        started_from=started_from, started_to=started_to,
+        last_seen_from=last_seen_from, last_seen_to=last_seen_to,
+        reach_min=reach_min, spend_min=spend_min, eu_country=eu_country,
+        used_in_ads_min=used_in_ads_min,
+    )
+    filtered = base.subquery()
+
+    first_phash_subq = (
+        select(Creative.ad_id, func.min(Creative.phash).label("phash"))
+        .where(Creative.phash.is_not(None))
+        .group_by(Creative.ad_id)
+        .subquery()
+    )
+    count_stmt = (
+        select(
+            func.count(
+                distinct(
+                    func.coalesce(
+                        first_phash_subq.c.phash, cast(filtered.c.id, String)
+                    )
+                )
+            )
+        )
+        .select_from(
+            filtered.outerjoin(
+                first_phash_subq, filtered.c.id == first_phash_subq.c.ad_id
+            )
+        )
+    )
+    total = (await session.execute(count_stmt)).scalar_one()
+    return {"total": total}
+
+
+@router.get("/partners")
+async def feed_partners(
+    session: AsyncSession = Depends(get_session),
+    _: ClientUser = Depends(get_current_client),
+):
+    rows = (await session.execute(
+        select(distinct(ParsingConfig.partner))
+        .where(ParsingConfig.partner.is_not(None), ParsingConfig.partner != "")
+        .order_by(ParsingConfig.partner)
+    )).scalars().all()
+    return {"partners": list(rows)}
+
+
+@router.get("/vertical-counts")
+async def vertical_counts(
+    session: AsyncSession = Depends(get_session),
+    _: ClientUser = Depends(get_current_client),
+):
+    rows = (await session.execute(
+        select(Ad.vertical, func.count(Ad.id))
+        .join(ModerationEntry, ModerationEntry.ad_id == Ad.id)
+        .where(ModerationEntry.status == ModerationStatus.APPROVED)
+        .group_by(Ad.vertical)
+    )).all()
+    return {"counts": {(v or "unknown"): c for v, c in rows}}
+
+
 @router.get("/facets")
 async def facets(
     session: AsyncSession = Depends(get_session),
@@ -372,7 +567,7 @@ async def get_ad(
 @router.get("/{ad_id}/similar", response_model=list[AdOut])
 async def similar_ads(
     ad_id: int,
-    by: str = Query("fp", regex="^(fp|domain)$"),
+    by: str = Query("fp", regex="^(fp|domain|ip)$"),
     limit: int = Query(12, le=50),
     session: AsyncSession = Depends(get_session),
     _: ClientUser = Depends(get_current_client),
@@ -394,10 +589,19 @@ async def similar_ads(
         if phashes:
             sub = select(Creative.ad_id).where(Creative.phash.in_(phashes))
             conditions.append(Ad.id.in_(sub))
+    elif by == "ip":
+        if base.ip:
+            conditions.append(Ad.ip == base.ip)
     else:  # by == "domain"
-        nd = _normalize_domain(base.display_url)
+        # домен берём из display_url, а если пусто — из link_url
+        nd = _normalize_domain(base.display_url) or _normalize_domain(
+            _host_from_url(base.link_url)
+        )
         if nd:
-            conditions.append(Ad.display_url.ilike(f"%{nd}%"))
+            conditions.append(or_(
+                Ad.display_url.ilike(f"%{nd}%"),
+                Ad.link_url.ilike(f"%{nd}%"),
+            ))
 
     if not conditions:
         return []

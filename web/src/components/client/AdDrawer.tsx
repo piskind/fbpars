@@ -3,6 +3,31 @@ import { useQuery } from '@tanstack/react-query'
 import { clientApi } from '../../api/client'
 import type { Ad } from '../../api/client'
 import { countryFlag } from '../../flags'
+import { Copy, Check } from 'lucide-react'
+
+function CopyButton({ text, className = '' }: { text: string; className?: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        })
+      }}
+      className={`relative text-gray-400 hover:text-gray-700 ${className}`}
+      aria-label="Копировать"
+    >
+      {copied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+      {copied && (
+        <span className="absolute -top-6 right-0 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap">
+          Скопировано
+        </span>
+      )}
+    </button>
+  )
+}
 
 function mediaUrl(s3Url: string | null): string | null {
   if (!s3Url) return null
@@ -47,7 +72,7 @@ type Props = {
 
 export function AdDrawer({ adId, onClose }: Props) {
   const [expandedForId, setExpandedForId] = useState<number | null>(null)
-  const [similarBy, setSimilarBy] = useState<'fp' | 'domain'>('fp')
+  const [similarBy, setSimilarBy] = useState<'fp' | 'domain' | 'ip'>('fp')
   const [prevAdId, setPrevAdId] = useState(adId)
   const [demoExpanded, setDemoExpanded] = useState(false)
 
@@ -117,20 +142,26 @@ export function AdDrawer({ adId, onClose }: Props) {
                 )}
                 <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2 flex-wrap">
                   <span>{countryFlag(ad.country)} {ad.country}</span>
-                  <span>·</span>
-                  <span>{ad.started_at ? new Date(ad.started_at).toLocaleDateString('ru-RU') : '—'}</span>
                   {ad.duplicates_count > 0 && (
                     <span className="text-orange-600">+{ad.duplicates_count} дубл.</span>
                   )}
                 </div>
               </div>
-              <span
-                className={`shrink-0 text-xs px-2 py-1 rounded-full ${
-                  ad.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                }`}
-              >
-                {ad.is_active ? 'Active' : 'Inactive'}
-              </span>
+              <div className="shrink-0 flex flex-col items-end gap-1">
+                <span
+                  className={`text-xs px-2 py-1 rounded-full ${
+                    ad.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                  }`}
+                >
+                  {ad.is_active ? 'Active' : 'Inactive'}
+                </span>
+                <span
+                  className="text-[11px] text-gray-500"
+                  title="дата создания объявления в FB"
+                >
+                  {ad.started_at ? new Date(ad.started_at).toLocaleDateString('ru-RU') : '—'}
+                </span>
+              </div>
             </div>
 
             {/* Медиа */}
@@ -182,7 +213,10 @@ export function AdDrawer({ adId, onClose }: Props) {
             {/* Текст */}
             {ad.body && (
               <div className="border-t pt-3">
-                <div className="text-[11px] uppercase text-gray-400 mb-1">Текст</div>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-[11px] uppercase text-gray-400">Текст</div>
+                  <CopyButton text={ad.body} />
+                </div>
                 <div className={`text-sm whitespace-pre-line ${expanded ? '' : 'line-clamp-3'}`}>
                   {ad.body}
                 </div>
@@ -218,7 +252,10 @@ export function AdDrawer({ adId, onClose }: Props) {
             {/* Ссылка */}
             {(ad.link_url || ad.display_url) && (
               <div className="border-t pt-3">
-                <div className="text-[11px] uppercase text-gray-400 mb-1">Ссылка</div>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-[11px] uppercase text-gray-400">Ссылка</div>
+                  <CopyButton text={ad.link_url || ad.display_url || ''} />
+                </div>
                 {ad.link_url ? (
                   <a
                     href={ad.link_url}
@@ -256,18 +293,16 @@ export function AdDrawer({ adId, onClose }: Props) {
               <div className="text-gray-400">Вертикаль</div>
               <div className="text-gray-800">{ad.vertical || '—'}</div>
 
-              {ad.partner && (
-                <>
-                  <div className="text-gray-400">Партнёрка</div>
-                  <div className="font-medium text-indigo-700">{ad.partner}</div>
-                </>
-              )}
+              <div className="text-gray-400">Партнёрка</div>
+              <div className={ad.partner ? 'font-medium text-indigo-700' : 'text-gray-800'}>
+                {ad.partner || '—'}
+              </div>
 
               <div className="text-gray-400">Library ID</div>
               <div className="text-gray-800 break-all">{ad.library_id}</div>
 
               <div className="text-gray-400">Дней активно</div>
-              <div className="text-gray-800">{ad.days_active}</div>
+              <div className="text-gray-800">{Math.max(1, ad.days_active)}</div>
 
               <div className="text-gray-400">Последняя активность</div>
               <div className="text-gray-800">
@@ -312,29 +347,27 @@ export function AdDrawer({ adId, onClose }: Props) {
               const topAge = demo.length ? calcTopAge(demo) : null
               return (
                 <div className="border-t pt-4">
-                  <div className="text-xs uppercase text-gray-400 mb-3">Статистика по объявлению</div>
-                  {!ad.reach ? (
-                    <div className="text-xs text-gray-400">Доступно только для объявлений из стран ЕС</div>
-                  ) : (
-                    <div className="space-y-3">
+                  <div className="text-xs uppercase text-gray-400 mb-2">Статистика по объявлению</div>
+                  <div className="text-[11px] text-gray-400 bg-gray-50 rounded-md px-2 py-1 mb-3">
+                    Доступно только для объявлений из стран ЕС
+                  </div>
+                  <div className="space-y-3">
                       {/* Три карточки: Охват / Пол / Возраст */}
                       <div className="grid grid-cols-3 gap-2">
                         <div className="bg-gray-50 rounded-lg p-2">
                           <div className="text-[10px] text-gray-400 mb-0.5">Охват</div>
-                          <div className="text-sm font-semibold">{ad.reach.toLocaleString('ru-RU')}</div>
+                          <div className="text-sm font-semibold">
+                            {ad.reach ? ad.reach.toLocaleString('ru-RU') : '0'}
+                          </div>
                         </div>
-                        {genderText && (
-                          <div className="bg-gray-50 rounded-lg p-2">
-                            <div className="text-[10px] text-gray-400 mb-0.5">Пол</div>
-                            <div className="text-xs font-medium leading-tight">{genderText}</div>
-                          </div>
-                        )}
-                        {topAge && (
-                          <div className="bg-gray-50 rounded-lg p-2">
-                            <div className="text-[10px] text-gray-400 mb-0.5">Возраст</div>
-                            <div className="text-xs font-medium">{topAge}</div>
-                          </div>
-                        )}
+                        <div className="bg-gray-50 rounded-lg p-2">
+                          <div className="text-[10px] text-gray-400 mb-0.5">Пол</div>
+                          <div className="text-xs font-medium leading-tight">{genderText || '--/--'}</div>
+                        </div>
+                        <div className="bg-gray-50 rounded-lg p-2">
+                          <div className="text-[10px] text-gray-400 mb-0.5">Возраст</div>
+                          <div className="text-xs font-medium">{topAge || '--/--'}</div>
+                        </div>
                       </div>
 
                       {/* Дополнительные поля */}
@@ -404,7 +437,6 @@ export function AdDrawer({ adId, onClose }: Props) {
                         </div>
                       )}
                     </div>
-                  )}
                 </div>
               )
             })()}
@@ -429,6 +461,14 @@ export function AdDrawer({ adId, onClose }: Props) {
                     }`}
                   >
                     По домену
+                  </button>
+                  <button
+                    onClick={() => setSimilarBy('ip')}
+                    className={`px-2 py-0.5 rounded ${
+                      similarBy === 'ip' ? 'bg-white shadow-sm' : 'text-gray-500'
+                    }`}
+                  >
+                    По IP
                   </button>
                 </div>
               </div>
