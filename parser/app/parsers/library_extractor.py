@@ -5,22 +5,19 @@ from datetime import datetime
 from playwright.async_api import Page
 from loguru import logger
 
-MAX_CARDS = 2500      # hard stop — safety net; FB caps the feed well before this
+MAX_CARDS = 2500      # safety net; FB caps the feed well before this
 _DEGRADE_FACTOR = 3   # scroll took N× median of first 5 → stop early
-_DEGRADE_MIN_S = 10   # degrade only triggered if scroll > this many seconds
+_DEGRADE_MIN_S = 10   # degrade only if scroll > this many seconds
 
 _LIBRARY_ID_RE = re.compile(r"Library ID:\s*(\d+)")
 
 
 def _merge_card(accumulated: dict, card: dict) -> bool:
     """
-    Merge one EXTRACT_SCRIPT card into the accumulator keyed by Library ID.
+    Merge one card into the accumulator keyed by Library ID. Returns True if it's new.
 
-    FB virtualizes the feed and evicts off-screen cards, so any single DOM snapshot
-    only holds ~20-30 cards. Accumulating across every scroll (and backfilling media
-    that rendered lazily) is what lets us retain the full 1700+ set.
-
-    Returns True if this call added a new unique card.
+    FB evicts off-screen cards, so one snapshot only holds ~20-30. We accumulate
+    across scrolls and backfill media that rendered lazily.
     """
     m = _LIBRARY_ID_RE.search(card.get("text") or "")
     if not m:
@@ -30,7 +27,6 @@ def _merge_card(accumulated: dict, card: dict) -> bool:
     if existing is None:
         accumulated[lib_id] = card
         return True
-    # Backfill media/urls that may have rendered after the card first appeared.
     if not existing.get("images") and card.get("images"):
         existing["images"] = card["images"]
     if not existing.get("videos") and card.get("videos"):
@@ -338,9 +334,7 @@ async def scroll_and_collect(
     stable_rounds: int = 3,
     max_cards: int = MAX_CARDS,
 ) -> list[dict]:
-    # Accumulate cards across every scroll keyed by Library ID. FB evicts off-screen
-    # cards from the DOM, so a single final snapshot only sees ~20-30 — the accumulator
-    # is what retains the whole feed.
+    # accumulate across scrolls — a final snapshot would only see the ~20-30 not-yet-evicted cards
     accumulated: dict[str, dict] = {}
     stable = 0
     last_height = 0
@@ -380,7 +374,7 @@ async def scroll_and_collect(
                 )
                 break
 
-        # End of feed: no new unique cards AND height stopped growing for N rounds.
+        # end of feed: no new cards and height stopped growing for N rounds
         if current_total == prev_total and new_height == last_height:
             stable += 1
             if stable >= stable_rounds:
@@ -392,8 +386,7 @@ async def scroll_and_collect(
         last_height = new_height
         await asyncio.sleep(1.5)
 
-    # Final pass: nudge lazy <video> elements into view, then re-extract to backfill
-    # media on cards still present in the DOM.
+    # nudge lazy <video> elements into view, then re-extract to backfill their media
     await page.evaluate("""
         () => {
             for (const v of document.querySelectorAll('video')) {

@@ -30,28 +30,18 @@ async def current_ip() -> str | None:
 
 
 async def rotate_ip_verified() -> bool:
-    """
-    Rotate proxy IP and verify it actually changed.
-
-    The proxy provider's rotate endpoint sometimes returns 200 but keeps the same
-    egress IP. Callers can't rely on rotate_ip() alone. This snapshots the IP
-    before/after and returns True only if it genuinely changed.
-    """
+    """Rotate IP and confirm it changed — the rotate endpoint often 200s but keeps the same IP."""
     before = await current_ip()
-    triggered = await rotate_ip()
-    if not triggered:
+    if not await rotate_ip():
         logger.warning("rotate_ip_verified: rotation trigger failed")
         return False
     after = await current_ip()
 
     if before is None or after is None:
-        # Can't confirm — treat as unverified rather than claim success.
-        logger.warning(
-            f"rotate_ip_verified: could not read IP (before={before}, after={after})"
-        )
+        logger.warning(f"rotate_ip_verified: could not read IP (before={before}, after={after})")
         return False
     if before == after:
-        logger.warning(f"rotate_ip_verified: IP unchanged after rotation ({after}) — proxy stuck")
+        logger.warning(f"rotate_ip_verified: IP unchanged ({after}) — proxy stuck")
         return False
 
     logger.info(f"rotate_ip_verified: IP changed {before} → {after}")

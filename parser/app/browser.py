@@ -325,12 +325,7 @@ async def scrape_via_browser_graphql(
     max_ads: int = 2000,
     max_scrolls: int = 80,
 ) -> list[dict]:
-    """
-    Intercept FB's own GraphQL responses while scrolling.
-    On IP rate limit: rotate proxy IP (verified) and retry (up to 2 times).
-
-    Secondary fallback to scrape_via_page_fetch — still scrolls, so browser RAM grows.
-    """
+    """Intercept FB's GraphQL responses while scrolling. Fallback to scrape_via_page_fetch (still scrolls → RAM grows)."""
     from app.proxy import rotate_ip_verified
 
     for attempt in range(3):
@@ -346,10 +341,8 @@ async def scrape_via_browser_graphql(
     return []
 
 
-# In-page fetch: runs inside the page's JS context so the request carries the exact
-# same TLS fingerprint + cookies/origin/referer/sec-* as FB's own Relay client.
-# Direct httpx/curl_cffi requests get rate-limited (1675004) by TLS fingerprinting;
-# this does not, because it *is* the browser making the request.
+# Runs in the page context, so it reuses the browser's TLS fingerprint + cookies.
+# Direct httpx/curl_cffi requests get 1675004 (fingerprinted); this doesn't.
 _FETCH_SCRIPT = """
 async ({url, body, headers}) => {
     const r = await fetch(url, {
@@ -367,11 +360,7 @@ _MAX_RATE_LIMIT_RETRIES = 3
 
 
 async def _capture_pagination_context(page, url: str) -> dict:
-    """
-    Load url, trigger FB's first AdLibrarySearchPaginationQuery via a short scroll,
-    and return the captured tokens + base_form_data + doc_id.
-    Raises RuntimeError if the pagination query never fired.
-    """
+    """Load url, scroll to fire the first pagination query, and grab its tokens/form/doc_id."""
     captured: dict = {}
     _, pagination_event = await _setup_token_capture(page, captured)
     await _load_and_scroll(page, url, pagination_event)
@@ -391,7 +380,7 @@ async def _capture_pagination_context(page, url: str) -> dict:
 
 
 async def _fetch_page_in_browser(page, captured: dict, variables: dict) -> tuple[int, str]:
-    """Build the form body and execute the GraphQL POST from inside the page context."""
+    """POST the GraphQL query from inside the page context."""
     from app.graphql_client import _build_form_data
 
     data = _build_form_data(captured, variables)
@@ -410,7 +399,7 @@ async def _fetch_page_in_browser(page, captured: dict, variables: dict) -> tuple
 
 
 async def _page_fetch_attempt(url: str, max_ads: int) -> list[dict]:
-    """Single attempt: open browser, capture tokens, paginate via in-page fetch. Raises _RateLimited."""
+    """One attempt: capture tokens, then paginate via in-page fetch. Raises _RateLimited if blocked."""
     from app.graphql_client import _parse_response_json, _extract_ads_and_cursor
 
     ad_nodes: list[dict] = []
@@ -420,10 +409,10 @@ async def _page_fetch_attempt(url: str, max_ads: int) -> list[dict]:
         page = await context.new_page()
         captured = await _capture_pagination_context(page, url)
 
-        # Real variable shape FB uses (country, adType, sortData, first, v, ...).
+        # reuse the exact variables FB sent (country, adType, sortData, first, v, ...)
         template = json.loads(captured["base_form_data"]["variables"])
         session_id = str(uuid.uuid4())
-        cursor: str | None = None  # start from page 1 to include the initial SSR cards
+        cursor: str | None = None  # None = start from page 1, so we get the initial cards too
         page_num = 0
         rate_limit_hits = 0
 
@@ -483,9 +472,8 @@ async def scrape_via_page_fetch(
     max_ads: int = 2000,
 ) -> list[dict]:
     """
-    Primary GraphQL path: load the page once, then paginate via in-page fetch()
-    without scrolling. DOM never grows, so browser RAM stays flat and there is no
-    ~1700-card scroll cap. On IP rate limit: rotate proxy IP (verified) and retry.
+    Primary path: load once, paginate via in-page fetch() without scrolling.
+    Flat RAM, no ~1700-card cap. On rate limit: rotate IP (verified) and retry.
     """
     from app.proxy import rotate_ip_verified
 
