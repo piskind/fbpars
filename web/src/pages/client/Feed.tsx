@@ -400,7 +400,13 @@ export function ClientFeedPage() {
     if (applied.appStore) p.set('app_store', applied.appStore)
     if (applied.lastSeenFrom) p.set('last_seen_from', applied.lastSeenFrom)
     if (applied.ecomPlatform) p.set('ecom_platform', applied.ecomPlatform)
-    if (applied.ipQuery) p.set('ip', applied.ipQuery)
+    if (applied.ipQuery.trim()) {
+      // Поле "IP или домен": IP-подобный ввод → точный матч по ip,
+      // иначе трактуем как домен (переиспользуем фильтр domain, если он свободен).
+      const q = applied.ipQuery.trim()
+      if (/^[\d.]+$/.test(q)) p.set('ip', q)
+      else if (!applied.domain) p.set('domain', q)
+    }
     if (applied.language) p.set('language', applied.language)
     if (applied.isActive) p.set('is_active', applied.isActive)
     if (applied.reachMin) p.set('reach_min', applied.reachMin)
@@ -516,7 +522,7 @@ export function ClientFeedPage() {
             </div>
 
             <div>
-              <label className="block text-xs text-gray-500 mb-1" title="Число стран показа (по ЕС-данным)">
+              <label className="block text-xs text-gray-500 mb-1" title="Число реальных стран показа: по ЕС-данным, для не-ЕС объявлений — 1 (страна парсинга)">
                 Кол-во стран
               </label>
               <input

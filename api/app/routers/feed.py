@@ -1,7 +1,8 @@
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_, and_, distinct, text, String, tuple_, cast
+from sqlalchemy import select, func, or_, and_, distinct, text, String, tuple_, cast, case
+from sqlalchemy.dialects.postgresql import array as pg_array
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,24 +22,21 @@ from app.schemas import AdOut
 router = APIRouter(prefix="/api/feed", tags=["feed"])
 
 
-def _host_from_url(u: str | None) -> str | None:
-    if not u:
-        return None
-    u = u.strip()
-    if "://" in u:
-        u = u.split("://", 1)[1]
-    u = u.split("/", 1)[0].split("?", 1)[0]
-    return u or None
-
-
 def _normalize_domain(d: str | None) -> str | None:
+    """Чистый host: без схемы, www, пути, query и порта, в нижнем регистре.
+
+    Принимает и голый домен ("ARTRONOL.ART"), и полный URL
+    ("https://www.artronol.art/promo?x=1") — на выходе "artronol.art".
+    """
     if not d:
         return None
-    d = d.lower().strip()
+    d = d.strip().lower()
+    if "://" in d:
+        d = d.split("://", 1)[1]
+    d = d.split("/", 1)[0].split("?", 1)[0]  # отбрасываем путь/query
     if d.startswith("www."):
         d = d[4:]
-    if "/" in d:
-        d = d.split("/", 1)[0]
+    d = d.split(":", 1)[0]  # отбрасываем порт
     return d or None
 
 
@@ -78,10 +76,20 @@ def _apply_ad_filters(
     eu_country=None,
     used_in_ads_min=None,
 ):
-    if countries:
-        stmt = stmt.where(Ad.country.in_(countries))
-    elif country:
-        stmt = stmt.where(Ad.country == country)
+    # Реальные страны показа объявления.
+    #  - eu_countries — фактический охват по странам (из EU-прозрачности), когда есть;
+    #  - иначе fallback на country (страна парсинг-конфига) как единственную страну показа:
+    #    у не-EU объявлений разбивки по странам нет, поэтому считаем их моногео.
+    # По этому набору работают И фильтр выбранной страны, И "Кол-во стран" — чтобы они
+    # не расходились (баг: PE-конфиг + eu_countries=[Spain] раньше проходил как PE).
+    effective_countries = case(
+        (func.coalesce(func.array_length(Ad.eu_countries, 1), 0) > 0, Ad.eu_countries),
+        else_=pg_array([Ad.country]),
+    )
+    _sel_countries = countries or ([country] if country else None)
+    if _sel_countries:
+        # выбранная страна должна быть среди реальных стран показа (мультигео тоже проходит)
+        stmt = stmt.where(effective_countries.op("&&")(pg_array(_sel_countries)))
     if keyword:
         stmt = stmt.where(Ad.keyword == keyword)
     if vertical:
@@ -123,9 +131,11 @@ def _apply_ad_filters(
         )
         stmt = stmt.where(tuple_(Ad.keyword, Ad.country).in_(cfg_sub))
     if country_count is not None:
-        # число стран показа берём из eu_countries (доступно только для ЕС-данных)
+        # ровно N реальных стран показа. Вместе с фильтром страны выше это даёт:
+        #  PE + count=1 → effective == [PE] (PE среди стран И их ровно одна),
+        #  поэтому объявление с eu_countries=[Spain] под PE+count=1 больше не проходит.
         stmt = stmt.where(
-            func.coalesce(func.array_length(Ad.eu_countries, 1), 0) == country_count
+            func.coalesce(func.array_length(effective_countries, 1), 0) == country_count
         )
     if is_active is not None:
         stmt = stmt.where(Ad.is_active.is_(is_active))
@@ -593,10 +603,9 @@ async def similar_ads(
         if base.ip:
             conditions.append(Ad.ip == base.ip)
     else:  # by == "domain"
-        # домен берём из display_url, а если пусто — из link_url
-        nd = _normalize_domain(base.display_url) or _normalize_domain(
-            _host_from_url(base.link_url)
-        )
+        # Чистый домен берём из display_url, а если пусто (напр. TLD .art, который
+        # парсер не кладёт в display_url) — из link_url. Обе стороны нормализуем.
+        nd = _normalize_domain(base.display_url) or _normalize_domain(base.link_url)
         if nd:
             conditions.append(or_(
                 Ad.display_url.ilike(f"%{nd}%"),
