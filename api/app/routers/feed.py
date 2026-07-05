@@ -2,8 +2,7 @@ import re
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_, and_, distinct, text, String, tuple_, cast, case
-from sqlalchemy.dialects.postgresql import array as pg_array
+from sqlalchemy import select, func, or_, and_, distinct, text, String, tuple_, cast
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -113,24 +112,17 @@ def _apply_ad_filters(
     used_in_ads_min=None,
     text_any=None,
 ):
-    # Реальные страны показа объявления.
-    #  - eu_countries — фактический охват по странам (из EU-прозрачности), когда есть;
-    #  - иначе fallback на country (страна парсинг-конфига) как единственную страну показа:
-    #    у не-EU объявлений разбивки по странам нет, поэтому считаем их моногео.
-    # По этому набору работают И фильтр выбранной страны, И "Кол-во стран" — чтобы они
-    # не расходились (баг: PE-конфиг + eu_countries=[Spain] раньше проходил как PE).
-    #  country хранится в разном регистре (pe/PE) → сравниваем в верхнем регистре,
-    #  поэтому "MX" находит и "mx" (баг: страна давала 0). eu_countries — названия
-    #  стран из EU-прозрачности, для не-EU объявлений их нет → берём страну конфига.
-    effective_countries = case(
-        (func.coalesce(func.array_length(Ad.eu_countries, 1), 0) > 0, Ad.eu_countries),
-        else_=pg_array([func.upper(Ad.country)]),
-    )
+    # ── Фильтр страны и "Кол-во стран" РАЗДЕЛЕНЫ, т.к. это про разные вещи ──
+    # Простой фильтр "покажи объявления из MX" — по полю ads.country (страна парсинга,
+    # ISO-код). Сравниваем в верхнем регистре, т.к. в БД встречается и "MX", и "mx".
+    #   Раньше страну матчили по eu_countries (реальный охват), но там лежат НАЗВАНИЯ
+    #   стран ("Mexico"/"Spain"), а не ISO-коды → "MX" не совпадал ни с чем и давал 0.
+    # "Кол-во стран показа" (country_count ниже) — отдельно, по реальному охвату
+    # (eu_countries). Так простой выбор страны всегда работает по country.
     _sel_countries = countries or ([country] if country else None)
     if _sel_countries:
-        # выбранная страна должна быть среди реальных стран показа (мультигео тоже проходит)
         _sel_upper = [c.upper() for c in _sel_countries if c]
-        stmt = stmt.where(effective_countries.op("&&")(pg_array(_sel_upper)))
+        stmt = stmt.where(func.upper(Ad.country).in_(_sel_upper))
     if keyword:
         stmt = stmt.where(Ad.keyword == keyword)
     if vertical:
@@ -150,12 +142,17 @@ def _apply_ad_filters(
             for kw in text_any
         ]))
     if domain:
-        # "Доменная зона": матч по СУФФИКСУ хоста, а не подстроке — ".com" ловит только
-        # домены, оканчивающиеся на .com (не .store). Граница метки слева = ^/./ , справа
-        # = конец/слэш/двоеточие/?/#. Работает и для голого домена (display_url), и для URL.
+        # "Доменная зона": матч по ХОСТУ, а НЕ по подстроке URL.
+        # Regex привязан к НАЧАЛУ строки: [схема://] [сабдомены.] <зона> <конец хоста>.
+        #   ^([a-z]+://)?  — опциональная схема (для link_url; display_url без схемы);
+        #   ([^/?#]*\.)?   — сабдомены до первого / ? # (в путь/query не выходим!);
+        #   <зона> затем граница хоста ([/:?#] или конец).
+        # Поэтому ".com" в query/пути ("...store/?u=x.com") НЕ ловится, а ".com" не
+        # матчит ".store": у greenwellnessworld.store хост кончается на .store.
+        # Юзер может ввести "com", ".com" или "example.com" — нормализуем.
         z = domain.strip().lstrip(".").lower()
         if z:
-            pat = r"(^|[./])" + re.escape(z) + r"([/:?#]|$)"
+            pat = r"^([a-z]+://)?([^/?#]*\.)?" + re.escape(z) + r"([/:?#]|$)"
             stmt = stmt.where(or_(
                 Ad.display_url.op("~*")(pat),
                 Ad.link_url.op("~*")(pat),
@@ -185,11 +182,11 @@ def _apply_ad_filters(
         )
         stmt = stmt.where(tuple_(Ad.keyword, Ad.country).in_(cfg_sub))
     if country_count is not None:
-        # ровно N реальных стран показа. Вместе с фильтром страны выше это даёт:
-        #  PE + count=1 → effective == [PE] (PE среди стран И их ровно одна),
-        #  поэтому объявление с eu_countries=[Spain] под PE+count=1 больше не проходит.
+        # Ровно N РЕАЛЬНЫХ стран показа — по охвату (eu_countries).
+        # У не-EU объявлений разбивки по странам нет → считаем их моногео (1 страна).
+        # Это независимо от фильтра страны выше (country vs охват — разные поля).
         stmt = stmt.where(
-            func.coalesce(func.array_length(effective_countries, 1), 0) == country_count
+            func.coalesce(func.array_length(Ad.eu_countries, 1), 1) == country_count
         )
     if is_active is not None:
         stmt = stmt.where(Ad.is_active.is_(is_active))
