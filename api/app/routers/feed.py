@@ -2,7 +2,7 @@ import re
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_, and_, distinct, text, String, tuple_, cast, case, exists
+from sqlalchemy import select, func, or_, and_, distinct, text, String, Integer, tuple_, cast, case, exists
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -122,7 +122,12 @@ def _apply_ad_filters(
     last_seen_from=None,
     last_seen_to=None,
     reach_min=None,
+    reach_max=None,
     spend_min=None,
+    spend_max=None,
+    gender=None,
+    age_min=None,
+    age_max=None,
     eu_country=None,
     used_in_ads_min=None,
     text_any=None,
@@ -232,10 +237,35 @@ def _apply_ad_filters(
             # точный: вся фраза как подстрока
             like = f"%{search}%"
             stmt = stmt.where(or_(*[f.ilike(like) for f in fields]))
+    # Охват/Спенд — диапазоны. Данные есть ТОЛЬКО у EU-объявлений (reach/spend_estimate),
+    # у не-EU они NULL → при этих фильтрах такие объявления не проходят (ожидаемо).
     if reach_min is not None:
         stmt = stmt.where(Ad.reach >= reach_min)
+    if reach_max is not None:
+        stmt = stmt.where(Ad.reach <= reach_max)
     if spend_min is not None:
         stmt = stmt.where(Ad.spend_estimate >= spend_min)
+    if spend_max is not None:
+        stmt = stmt.where(Ad.spend_estimate <= spend_max)
+    if gender:
+        # Пол таргетинга (EU): reach_breakdown.targeting.gender ("Men"/"Women"/"All").
+        # best-effort ILIKE; "all" не фильтрует. Значение может быть локализовано.
+        g = gender.lower()
+        if g in ("men", "women"):
+            stmt = stmt.where(
+                Ad.reach_breakdown["targeting"]["gender"].astext.ilike(f"%{g}%")
+            )
+    if age_min is not None or age_max is not None:
+        # Возраст таргетинга (EU): reach_breakdown.targeting.age вида "18 - 65+".
+        # Берём нижнюю границу (первое число) — best-effort фильтр от/до.
+        age_low = cast(
+            func.substring(Ad.reach_breakdown["targeting"]["age"].astext, r"(\d+)"),
+            Integer,
+        )
+        if age_min is not None:
+            stmt = stmt.where(age_low >= age_min)
+        if age_max is not None:
+            stmt = stmt.where(age_low <= age_max)
     if eu_country:
         stmt = stmt.where(Ad.eu_countries.op("&&")(eu_country))
     if used_in_ads_min is not None:
@@ -273,7 +303,12 @@ async def list_feed(
     last_seen_from: datetime | None = Query(None),
     last_seen_to: datetime | None = Query(None),
     reach_min: int | None = Query(None),
+    reach_max: int | None = Query(None),
     spend_min: int | None = Query(None),
+    spend_max: int | None = Query(None),
+    gender: str | None = Query(None),
+    age_min: int | None = Query(None),
+    age_max: int | None = Query(None),
     eu_country: list[str] | None = Query(None),
     used_in_ads_min: int | None = Query(None),
     text_any: list[str] | None = Query(None),
@@ -301,8 +336,9 @@ async def list_feed(
         days_active_min=days_active_min, days_active_max=days_active_max,
         started_from=started_from, started_to=started_to,
         last_seen_from=last_seen_from, last_seen_to=last_seen_to,
-        reach_min=reach_min, spend_min=spend_min, eu_country=eu_country,
-        used_in_ads_min=used_in_ads_min, text_any=text_any,
+        reach_min=reach_min, reach_max=reach_max, spend_min=spend_min,
+        spend_max=spend_max, gender=gender, age_min=age_min, age_max=age_max,
+        eu_country=eu_country, used_in_ads_min=used_in_ads_min, text_any=text_any,
     )
 
     if sort == "newest":
@@ -468,7 +504,12 @@ async def feed_count(
     last_seen_from: datetime | None = Query(None),
     last_seen_to: datetime | None = Query(None),
     reach_min: int | None = Query(None),
+    reach_max: int | None = Query(None),
     spend_min: int | None = Query(None),
+    spend_max: int | None = Query(None),
+    gender: str | None = Query(None),
+    age_min: int | None = Query(None),
+    age_max: int | None = Query(None),
     eu_country: list[str] | None = Query(None),
     used_in_ads_min: int | None = Query(None),
     text_any: list[str] | None = Query(None),
@@ -492,8 +533,9 @@ async def feed_count(
         days_active_min=days_active_min, days_active_max=days_active_max,
         started_from=started_from, started_to=started_to,
         last_seen_from=last_seen_from, last_seen_to=last_seen_to,
-        reach_min=reach_min, spend_min=spend_min, eu_country=eu_country,
-        used_in_ads_min=used_in_ads_min, text_any=text_any,
+        reach_min=reach_min, reach_max=reach_max, spend_min=spend_min,
+        spend_max=spend_max, gender=gender, age_min=age_min, age_max=age_max,
+        eu_country=eu_country, used_in_ads_min=used_in_ads_min, text_any=text_any,
     )
     filtered = base.subquery()
 

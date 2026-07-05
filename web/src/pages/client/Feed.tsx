@@ -59,9 +59,14 @@ type Filters = {
   cta: string[]
   platforms: string[]
   leadForm: string
+  // EU settings card
+  gender: string
+  ageMin: string
+  ageMax: string
   reachMin: string
+  reachMax: string
   spendMin: string
-  hasEuData: string
+  spendMax: string
   // Fine settings card
   pageName: string
   appLink: string
@@ -96,9 +101,13 @@ const emptyFilters: Filters = {
   cta: [],
   platforms: [],
   leadForm: '',
+  gender: '',
+  ageMin: '',
+  ageMax: '',
   reachMin: '',
+  reachMax: '',
   spendMin: '',
-  hasEuData: '',
+  spendMax: '',
   pageName: '',
   appLink: '',
   domain: '',
@@ -464,9 +473,14 @@ export function ClientFeedPage() {
     }
     applied.language.forEach((l) => p.append('language', l))
     if (applied.isActive) p.set('is_active', applied.isActive)
+    // EU-настройки (данные только у EU-объявлений)
     if (applied.reachMin) p.set('reach_min', applied.reachMin)
-    else if (applied.hasEuData === 'yes') p.set('reach_min', '1')
+    if (applied.reachMax) p.set('reach_max', applied.reachMax)
     if (applied.spendMin) p.set('spend_min', applied.spendMin)
+    if (applied.spendMax) p.set('spend_max', applied.spendMax)
+    if (applied.gender) p.set('gender', applied.gender)
+    if (applied.ageMin) p.set('age_min', applied.ageMin)
+    if (applied.ageMax) p.set('age_max', applied.ageMax)
     // Подкатегории/тематики вертикалей → OR по body/page_name
     ;[...applied.gamblingSubs, ...applied.nutraNames, ...applied.nutraThemes].forEach((t) =>
       p.append('text_any', t),
@@ -716,12 +730,12 @@ export function ClientFeedPage() {
             </button>
           </div>
 
-          {/* Two cards */}
+          {/* Three cards */}
           {showSettings && (
-            <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="mt-3 grid grid-cols-1 lg:grid-cols-4 gap-4">
 
-              {/* Left card */}
-              <div className="bg-gray-50 border border-gray-200 rounded-xl p-5">
+              {/* Card 1: Настройки объявлений */}
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 lg:col-span-1">
                 <h3 className="flex items-center gap-1.5 text-xs text-gray-500 font-medium mb-4">
                   <Settings className="w-3.5 h-3.5" /> Настройки объявлений
                 </h3>
@@ -763,44 +777,15 @@ export function ClientFeedPage() {
                       <option value="false">Нет</option>
                     </SelectField>
                   </FieldRow>
-
-                  <FieldRow label="EU данные">
-                    <SelectField value={draft.hasEuData} onChange={(v) => set({ hasEuData: v })}>
-                      <option value="">Все</option>
-                      <option value="yes">Только с охватом</option>
-                    </SelectField>
-                  </FieldRow>
-
-                  <FieldRow label="Мин. охват">
-                    <input
-                      type="number"
-                      min="0"
-                      value={draft.reachMin}
-                      onChange={(e) => set({ reachMin: e.target.value })}
-                      placeholder="напр. 10000"
-                      className="w-full px-3 py-2 border rounded-lg text-sm"
-                    />
-                  </FieldRow>
-
-                  <FieldRow label="Мин. спенд $">
-                    <input
-                      type="number"
-                      min="0"
-                      value={draft.spendMin}
-                      onChange={(e) => set({ spendMin: e.target.value })}
-                      placeholder="напр. 1000"
-                      className="w-full px-3 py-2 border rounded-lg text-sm"
-                    />
-                  </FieldRow>
                 </div>
               </div>
 
-              {/* Right card */}
-              <div className="bg-gray-50 border border-gray-200 rounded-xl p-5">
+              {/* Card 2: Тонкие настройки (шире, 2 колонки) */}
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 lg:col-span-2">
                 <h3 className="flex items-center gap-1.5 text-xs text-gray-500 font-medium mb-4">
                   <SlidersHorizontal className="w-3.5 h-3.5" /> Тонкие настройки
                 </h3>
-                <div className="space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3">
                   <FieldRow label="Fan page ID или название">
                     <InputField
                       value={draft.pageName}
@@ -881,6 +866,67 @@ export function ClientFeedPage() {
                       selected={draft.language.map((l) => l.toUpperCase())}
                       onChange={(langs) => set({ language: langs })}
                     />
+                  </FieldRow>
+                </div>
+              </div>
+
+              {/* Card 3: Настройки для ЕС */}
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 lg:col-span-1">
+                <h3 className="flex items-center gap-1.5 text-xs text-gray-500 font-medium mb-1">
+                  🇪🇺 Настройки для ЕС
+                </h3>
+                <div className="text-[10px] text-gray-400 mb-4">
+                  Данные есть только у объявлений из ЕС
+                </div>
+                <div className="space-y-3">
+                  <FieldRow label="Пол">
+                    <div className="flex bg-white border rounded-lg p-0.5 text-sm">
+                      {([['', 'All'], ['men', 'Men'], ['women', 'Women']] as const).map(([val, lbl]) => (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() => set({ gender: val })}
+                          className={`flex-1 px-2 py-1.5 rounded-md transition ${
+                            draft.gender === val ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+                          }`}
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </FieldRow>
+
+                  <FieldRow label="Возраст">
+                    <div className="flex items-center gap-2">
+                      <input type="number" min="0" value={draft.ageMin}
+                        onChange={(e) => set({ ageMin: e.target.value })} placeholder="От"
+                        className="w-full px-3 py-2 border rounded-lg text-sm" />
+                      <input type="number" min="0" value={draft.ageMax}
+                        onChange={(e) => set({ ageMax: e.target.value })} placeholder="До"
+                        className="w-full px-3 py-2 border rounded-lg text-sm" />
+                    </div>
+                  </FieldRow>
+
+                  <FieldRow label="Охват">
+                    <div className="flex items-center gap-2">
+                      <input type="number" min="0" value={draft.reachMin}
+                        onChange={(e) => set({ reachMin: e.target.value })} placeholder="От"
+                        className="w-full px-3 py-2 border rounded-lg text-sm" />
+                      <input type="number" min="0" value={draft.reachMax}
+                        onChange={(e) => set({ reachMax: e.target.value })} placeholder="До"
+                        className="w-full px-3 py-2 border rounded-lg text-sm" />
+                    </div>
+                  </FieldRow>
+
+                  <FieldRow label="Спенд $">
+                    <div className="flex items-center gap-2">
+                      <input type="number" min="0" value={draft.spendMin}
+                        onChange={(e) => set({ spendMin: e.target.value })} placeholder="От"
+                        className="w-full px-3 py-2 border rounded-lg text-sm" />
+                      <input type="number" min="0" value={draft.spendMax}
+                        onChange={(e) => set({ spendMax: e.target.value })} placeholder="До"
+                        className="w-full px-3 py-2 border rounded-lg text-sm" />
+                    </div>
                   </FieldRow>
                 </div>
               </div>
