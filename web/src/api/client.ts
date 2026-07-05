@@ -35,6 +35,39 @@ export const clientApi = makeApi('client_token', '/login')
 
 export const api = adminApi
 
+// Осмысленное имя файла для скачиваемого креатива: library_id + расширение.
+export function mediaFilename(
+  libraryId: string | null,
+  mediaType: string | null,
+  url: string,
+): string {
+  const base = libraryId || 'creative'
+  let ext = (mediaType || '').toLowerCase() === 'video' ? 'mp4' : 'jpg'
+  const m = url.split('?')[0].match(/\.([a-z0-9]{2,4})$/i)
+  if (m) ext = m[1].toLowerCase()
+  return `${base}.${ext}`
+}
+
+// Принудительное скачивание файла (не открытие вкладки): тянем blob и сохраняем.
+// Нужно для видео/картинок на presigned S3, где download-атрибут игнорируется.
+export async function downloadMedia(url: string, filename: string): Promise<void> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(String(res.status))
+    const blob = await res.blob()
+    const objUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(objUrl), 1000)
+  } catch {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+}
+
 export type Config = {
   id: number
   config_type: 'keyword' | 'filters' | 'fanpage'

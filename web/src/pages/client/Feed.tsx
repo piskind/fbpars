@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useQuery, useInfiniteQuery } from '@tanstack/react-query'
-import { clientApi } from '../../api/client'
+import { clientApi, downloadMedia, mediaFilename } from '../../api/client'
 import type { Ad } from '../../api/client'
 import { AdDrawer } from '../../components/client/AdDrawer'
 import { DateRangePicker } from '../../components/client/DateRangePicker'
 import { countryFlag } from '../../flags'
-import { Settings, SlidersHorizontal, ChevronDown, Search, Calendar, Download } from 'lucide-react'
+import { Settings, SlidersHorizontal, ChevronDown, Search, Calendar, Download, X } from 'lucide-react'
 
 const PAGE_SIZE = 40
 
@@ -26,15 +26,6 @@ function fmtDate(s: string | null | undefined): string {
   return new Date(s).toLocaleDateString('ru-RU')
 }
 
-function downloadFile(url: string, name = '') {
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name
-  a.target = '_blank'
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -51,7 +42,7 @@ type Facets = {
 }
 
 type Filters = {
-  country: string
+  countries: string[]
   search: string
   searchMode: string
   countryCount: string
@@ -64,8 +55,8 @@ type Filters = {
   sort: string
   isActive: string
   // Ad settings card
-  mediaType: string
-  cta: string
+  mediaType: string[]
+  cta: string[]
   platforms: string[]
   leadForm: string
   reachMin: string
@@ -78,13 +69,18 @@ type Filters = {
   linkContains: string
   appStore: string
   lastSeenFrom: string
+  lastSeenTo: string
   ecomPlatform: string
   ipQuery: string
-  language: string
+  language: string[]
+  // Vertical subcategory chips (мультивыбор → text_any OR)
+  gamblingSubs: string[]
+  nutraNames: string[]
+  nutraThemes: string[]
 }
 
 const emptyFilters: Filters = {
-  country: '',
+  countries: [],
   search: '',
   searchMode: 'exact',
   countryCount: '',
@@ -96,8 +92,8 @@ const emptyFilters: Filters = {
   partners: [],
   sort: 'newest',
   isActive: '',
-  mediaType: '',
-  cta: '',
+  mediaType: [],
+  cta: [],
   platforms: [],
   leadForm: '',
   reachMin: '',
@@ -109,9 +105,13 @@ const emptyFilters: Filters = {
   linkContains: '',
   appStore: '',
   lastSeenFrom: '',
+  lastSeenTo: '',
   ecomPlatform: '',
   ipQuery: '',
-  language: '',
+  language: [],
+  gamblingSubs: [],
+  nutraNames: [],
+  nutraThemes: [],
 }
 
 // Вертикали. active=false → заглушка «в разработке».
@@ -122,13 +122,26 @@ const VERTICALS: { key: string; label: string; active: boolean }[] = [
   { key: 'ecommerce', label: 'E-commerce', active: false },
 ]
 
-// Подкатегории (захардкожены — фильтр по подкатегории появится с парсером).
-const VERTICAL_CHIPS = [
-  'All', 'Uncategorized', 'Aviator', 'Bomb defuse', 'Book of dead', 'Book of ra',
+// Подкатегории Gambling (мультивыбор → фильтр по ключу в body/page_name).
+const GAMBLING_SUBS = [
+  'Aviator', 'Bomb defuse', 'Book of dead', 'Book of ra',
   'Chicken road', 'Chicken subway', 'Coin strike', 'Energy coins', 'Energy joker',
   'Fire joker', 'Gates of olympus', 'Joker stoker', 'Jokers jewels', 'Penalty duel',
   'Pink joker', 'Plinko', 'Royal joker', 'Sugar rush', 'Sun of egypt', 'Sweet bonanza',
   'Tower rush',
+]
+
+// Nutra: «По названию» — ключ бренда в body/page_name.
+const NUTRA_NAMES = [
+  'Duston Gel', 'Grinlait', 'Sustarox', 'Oxys', 'Elastica', 'Flemona', 'Audix',
+  'ReTime Serum', 'Tridentex', 'Vitaflex',
+]
+
+// Nutra: «По тематике» — пока фильтр по вхождению слова-тематики в текст.
+// Полноценная разметка объявлений по тематикам будет позже через админку.
+const NUTRA_THEMES = [
+  'Суставы', 'Простатит', 'Потенция', 'Гипертония', 'Диабет', 'Паразиты', 'Геморрой',
+  'Диета', 'Похудение', 'Зрение', 'Слух', 'Цистит', 'Варикоз', 'Волосы', 'Омоложение',
 ]
 
 // ─── Small components ─────────────────────────────────────────────────────────
@@ -197,14 +210,14 @@ function InputField({
   )
 }
 
-function CountryDropdown({
+function CountryMultiSelect({
   options,
   selected,
   onChange,
 }: {
   options: string[]
-  selected: string | null
-  onChange: (v: string | null) => void
+  selected: string[]
+  onChange: (v: string[]) => void
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -221,16 +234,18 @@ function CountryDropdown({
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  const label = selected ? `${countryFlag(selected)} ${selected}` : 'Все'
+  const label =
+    selected.length === 0
+      ? 'Все'
+      : selected.length <= 2
+      ? selected.map((c) => `${countryFlag(c)} ${c}`).join(', ')
+      : `${selected.length} стран`
   const filtered = search
     ? options.filter((c) => c.toLowerCase().includes(search.toLowerCase()))
     : options
 
-  const select = (c: string | null) => {
-    onChange(c)
-    setOpen(false)
-    setSearch('')
-  }
+  const toggle = (c: string) =>
+    onChange(selected.includes(c) ? selected.filter((x) => x !== c) : [...selected, c])
 
   return (
     <div className="relative" ref={ref}>
@@ -244,7 +259,7 @@ function CountryDropdown({
       </button>
       {open && (
         <div className="absolute z-50 mt-1 bg-white border rounded-lg shadow-lg w-52">
-          <div className="p-2 border-b">
+          <div className="p-2 border-b flex items-center gap-2">
             <input
               type="text"
               value={search}
@@ -253,29 +268,69 @@ function CountryDropdown({
               className="w-full px-2 py-1 text-sm border rounded"
               autoFocus
             />
+            {selected.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onChange([])}
+                className="text-[11px] text-gray-400 hover:text-gray-700 shrink-0"
+              >
+                Сброс
+              </button>
+            )}
           </div>
           <div className="max-h-52 overflow-y-auto">
-            <button
-              type="button"
-              onClick={() => select(null)}
-              className={`w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 ${!selected ? 'bg-blue-50 text-blue-700 font-medium' : ''}`}
-            >
-              Все
-            </button>
             {filtered.map((c) => (
-              <button
+              <label
                 key={c}
-                type="button"
-                onClick={() => select(selected === c ? null : c)}
-                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 flex items-center justify-between ${selected === c ? 'bg-blue-50 text-blue-700 font-medium' : ''}`}
+                className={`flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50 cursor-pointer ${selected.includes(c) ? 'bg-blue-50 text-blue-700 font-medium' : ''}`}
               >
+                <input
+                  type="checkbox"
+                  checked={selected.includes(c)}
+                  onChange={() => toggle(c)}
+                  className="w-3.5 h-3.5"
+                />
                 <span>{countryFlag(c)} {c}</span>
-                {selected === c && <span className="text-blue-500 text-xs">✓</span>}
-              </button>
+              </label>
             ))}
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// Мультивыбор чипсов (подкатегории/тематики).
+function ChipMultiSelect({
+  options,
+  selected,
+  onChange,
+}: {
+  options: string[]
+  selected: string[]
+  onChange: (v: string[]) => void
+}) {
+  const toggle = (c: string) =>
+    onChange(selected.includes(c) ? selected.filter((x) => x !== c) : [...selected, c])
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map((c) => {
+        const on = selected.includes(c)
+        return (
+          <button
+            key={c}
+            type="button"
+            onClick={() => toggle(c)}
+            className={`px-2.5 py-1 rounded-full text-xs border transition ${
+              on
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white text-gray-600 hover:border-gray-300'
+            }`}
+          >
+            {c}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -345,7 +400,6 @@ export function ClientFeedPage() {
   const [applied, setApplied] = useState<Filters>(emptyFilters)
   const [showSettings, setShowSettings] = useState(false)
   const [openVertical, setOpenVertical] = useState<string | null>(null)
-  const [subcat, setSubcat] = useState('All')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
 
@@ -369,7 +423,7 @@ export function ClientFeedPage() {
   const baseParams = useMemo(() => {
     const p = new URLSearchParams()
     p.set('sort', applied.sort)
-    if (applied.country) p.set('country', applied.country)
+    applied.countries.forEach((c) => p.append('countries', c))
     if (applied.vertical) p.set('vertical', applied.vertical)
     if (applied.search.trim()) {
       p.set('search', applied.search.trim())
@@ -381,9 +435,9 @@ export function ClientFeedPage() {
     if (applied.startedTo) p.set('started_to', applied.startedTo)
     if (applied.daysMin) p.set('days_active_min', applied.daysMin)
     if (applied.daysMax) p.set('days_active_max', applied.daysMax)
-    // Ad settings
-    if (applied.mediaType) p.set('media_type', applied.mediaType)
-    if (applied.cta) p.set('cta', applied.cta)
+    // Ad settings (мультивыбор → несколько параметров, фильтр по OR)
+    applied.mediaType.forEach((m) => p.append('media_type', m))
+    applied.cta.forEach((c) => p.append('cta', c))
     applied.platforms.forEach((pl) => p.append('platforms', pl))
     if (applied.leadForm) p.set('lead_form', applied.leadForm)
     // Fine settings
@@ -399,6 +453,7 @@ export function ClientFeedPage() {
     if (applied.domain) p.set('domain', applied.domain)
     if (applied.appStore) p.set('app_store', applied.appStore)
     if (applied.lastSeenFrom) p.set('last_seen_from', applied.lastSeenFrom)
+    if (applied.lastSeenTo) p.set('last_seen_to', applied.lastSeenTo)
     if (applied.ecomPlatform) p.set('ecom_platform', applied.ecomPlatform)
     if (applied.ipQuery.trim()) {
       // Поле "IP или домен": IP-подобный ввод → точный матч по ip,
@@ -407,11 +462,15 @@ export function ClientFeedPage() {
       if (/^[\d.]+$/.test(q)) p.set('ip', q)
       else if (!applied.domain) p.set('domain', q)
     }
-    if (applied.language) p.set('language', applied.language)
+    applied.language.forEach((l) => p.append('language', l))
     if (applied.isActive) p.set('is_active', applied.isActive)
     if (applied.reachMin) p.set('reach_min', applied.reachMin)
     else if (applied.hasEuData === 'yes') p.set('reach_min', '1')
     if (applied.spendMin) p.set('spend_min', applied.spendMin)
+    // Подкатегории/тематики вертикалей → OR по body/page_name
+    ;[...applied.gamblingSubs, ...applied.nutraNames, ...applied.nutraThemes].forEach((t) =>
+      p.append('text_any', t),
+    )
     return p
   }, [applied])
 
@@ -514,10 +573,10 @@ export function ClientFeedPage() {
 
             <div>
               <label className="block text-xs text-gray-500 mb-1">Страны</label>
-              <CountryDropdown
+              <CountryMultiSelect
                 options={facets?.countries ?? []}
-                selected={draft.country || null}
-                onChange={(c) => set({ country: c ?? '' })}
+                selected={draft.countries}
+                onChange={(countries) => set({ countries })}
               />
             </div>
 
@@ -628,12 +687,23 @@ export function ClientFeedPage() {
               </div>
             </div>
 
-            <button
-              onClick={apply}
-              className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
-            >
-              Найти
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={apply}
+                className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
+              >
+                Найти
+              </button>
+              <button
+                type="button"
+                onClick={reset}
+                title="Сбросить все фильтры"
+                aria-label="Сбросить все фильтры"
+                className="w-9 h-9 rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-700 flex items-center justify-center shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           {/* Toggle */}
@@ -657,17 +727,11 @@ export function ClientFeedPage() {
                 </h3>
                 <div className="space-y-3">
                   <FieldRow label="Формат объявлений">
-                    <SelectField
-                      value={draft.mediaType}
-                      onChange={(v) => set({ mediaType: v })}
-                    >
-                      <option value="">Все</option>
-                      {facets?.media_types.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </SelectField>
+                    <MultiSelectDropdown
+                      options={facets?.media_types ?? []}
+                      selected={draft.mediaType}
+                      onChange={(mediaType) => set({ mediaType })}
+                    />
                   </FieldRow>
 
                   <FieldRow label="Формат медиа">
@@ -677,14 +741,11 @@ export function ClientFeedPage() {
                   </FieldRow>
 
                   <FieldRow label="CTA">
-                    <SelectField value={draft.cta} onChange={(v) => set({ cta: v })}>
-                      <option value="">Все</option>
-                      {facets?.ctas.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </SelectField>
+                    <MultiSelectDropdown
+                      options={facets?.ctas ?? []}
+                      selected={draft.cta}
+                      onChange={(cta) => set({ cta })}
+                    />
                   </FieldRow>
 
                   <FieldRow label="Плейсменты">
@@ -784,11 +845,11 @@ export function ClientFeedPage() {
                   </FieldRow>
 
                   <FieldRow label="Последняя активность">
-                    <input
-                      type="date"
-                      value={draft.lastSeenFrom}
-                      onChange={(e) => set({ lastSeenFrom: e.target.value })}
-                      className="w-full px-3 py-2 border rounded-lg text-sm"
+                    <DateRangePicker
+                      from={draft.lastSeenFrom}
+                      to={draft.lastSeenTo}
+                      onChange={(f, t) => set({ lastSeenFrom: f, lastSeenTo: t })}
+                      label="Диапазон дат"
                     />
                   </FieldRow>
 
@@ -815,14 +876,11 @@ export function ClientFeedPage() {
                   </FieldRow>
 
                   <FieldRow label="Язык объявления">
-                    <SelectField value={draft.language} onChange={(v) => set({ language: v })}>
-                      <option value="">Все</option>
-                      {facets?.languages?.map((l) => (
-                        <option key={l} value={l}>
-                          {l.toUpperCase()}
-                        </option>
-                      ))}
-                    </SelectField>
+                    <MultiSelectDropdown
+                      options={facets?.languages?.map((l) => l.toUpperCase()) ?? []}
+                      selected={draft.language.map((l) => l.toUpperCase())}
+                      onChange={(langs) => set({ language: langs })}
+                    />
                   </FieldRow>
                 </div>
               </div>
@@ -843,7 +901,6 @@ export function ClientFeedPage() {
                     onClick={() => {
                       set({ vertical: selected ? '' : v.key })
                       setOpenVertical(openVertical === v.key ? null : v.key)
-                      setSubcat('All')
                     }}
                     title={v.active ? undefined : 'В разработке'}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border transition ${
@@ -870,23 +927,35 @@ export function ClientFeedPage() {
               })}
             </div>
 
-            {/* Чипсы-подкатегории */}
-            {openVertical && VERTICALS.find((v) => v.key === openVertical)?.active && (
-              <div className="flex flex-wrap gap-1.5 mt-3">
-                {VERTICAL_CHIPS.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setSubcat(c)}
-                    className={`px-2.5 py-1 rounded-full text-xs border transition ${
-                      subcat === c
-                        ? 'bg-blue-50 text-blue-700 border-blue-200'
-                        : 'bg-white text-gray-600 hover:border-gray-300'
-                    }`}
-                  >
-                    {c}
-                  </button>
-                ))}
+            {/* Чипсы-подкатегории (мультивыбор → Найти) */}
+            {openVertical === 'gambling' && (
+              <div className="mt-3">
+                <div className="text-[11px] uppercase text-gray-400 mb-1.5">Подкатегории</div>
+                <ChipMultiSelect
+                  options={GAMBLING_SUBS}
+                  selected={draft.gamblingSubs}
+                  onChange={(gamblingSubs) => set({ gamblingSubs })}
+                />
+              </div>
+            )}
+            {openVertical === 'nutra' && (
+              <div className="mt-3 space-y-3">
+                <div>
+                  <div className="text-[11px] uppercase text-gray-400 mb-1.5">По названию</div>
+                  <ChipMultiSelect
+                    options={NUTRA_NAMES}
+                    selected={draft.nutraNames}
+                    onChange={(nutraNames) => set({ nutraNames })}
+                  />
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase text-gray-400 mb-1.5">По тематике</div>
+                  <ChipMultiSelect
+                    options={NUTRA_THEMES}
+                    selected={draft.nutraThemes}
+                    onChange={(nutraThemes) => set({ nutraThemes })}
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -929,7 +998,7 @@ export function ClientFeedPage() {
             const url = cre ? mediaUrl(cre.s3_url) : null
             const isVideo = cre?.media_type?.toLowerCase() === 'video'
             const isSelected = selectedId === ad.id
-            const pageFbUrl = adsLibraryUrl(ad.page_id)
+            const pageFbUrl = ad.page_url || adsLibraryUrl(ad.page_id)
             const days = Math.max(1, ad.days_active)
             const usedIn = ad.used_in_ads_count ?? ad.duplicates_count
             const dayTip =
@@ -971,7 +1040,7 @@ export function ClientFeedPage() {
                       title="Скачать креатив"
                       onClick={(e) => {
                         e.stopPropagation()
-                        downloadFile(url, `ad-${ad.id}`)
+                        downloadMedia(url, mediaFilename(ad.library_id, cre?.media_type ?? null, url))
                       }}
                       className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow hover:bg-blue-700"
                     >
@@ -1043,7 +1112,7 @@ export function ClientFeedPage() {
                     </span>
                   </div>
                   <div className="text-xs text-gray-500">
-                    {countryFlag(ad.country)} {ad.country} · {ad.keyword}
+                    {countryFlag(ad.country)} {ad.country?.toUpperCase()} · {ad.keyword}
                   </div>
                 </div>
               </div>

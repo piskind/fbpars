@@ -1,9 +1,36 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { clientApi } from '../../api/client'
+import { clientApi, downloadMedia, mediaFilename } from '../../api/client'
 import type { Ad } from '../../api/client'
 import { countryFlag } from '../../flags'
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, ThumbsUp, Camera, MessageCircle, Globe, Phone } from 'lucide-react'
+
+// Иконки плейсментов (значения publisher_platforms из FB GraphQL).
+// lucide в этой версии не отдаёт бренд-иконки → берём узнаваемые generic-аналоги.
+const PLATFORM_ICONS: Record<string, { Icon: typeof ThumbsUp; label: string }> = {
+  facebook: { Icon: ThumbsUp, label: 'Facebook' },
+  instagram: { Icon: Camera, label: 'Instagram' },
+  messenger: { Icon: MessageCircle, label: 'Messenger' },
+  whatsapp: { Icon: Phone, label: 'WhatsApp' },
+  audience_network: { Icon: Globe, label: 'Audience Network' },
+}
+
+function PlatformBadge({ name }: { name: string }) {
+  const key = name.toLowerCase().replace(/\s+/g, '_')
+  const entry = PLATFORM_ICONS[key]
+  if (entry) {
+    const { Icon, label } = entry
+    return (
+      <span
+        title={label}
+        className="flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded-full"
+      >
+        <Icon className="w-3.5 h-3.5" /> {label}
+      </span>
+    )
+  }
+  return <span className="px-2 py-0.5 bg-gray-100 text-gray-700 text-xs rounded-full">{name}</span>
+}
 
 function CopyButton({ text, className = '' }: { text: string; className?: string }) {
   const [copied, setCopied] = useState(false)
@@ -103,7 +130,8 @@ export function AdDrawer({ adId, onClose }: Props) {
 
   if (!adId) return null
 
-  const pageFbUrl = ad ? adsLibraryUrl(ad.page_id) : null
+  // Фанпейдж кликабелен, если есть прямой page_url, иначе строим ссылку по page_id.
+  const pageFbUrl = ad ? (ad.page_url || adsLibraryUrl(ad.page_id)) : null
   const expanded = expandedForId === adId
 
   return (
@@ -141,7 +169,7 @@ export function AdDrawer({ adId, onClose }: Props) {
                   <div className="font-semibold text-sm break-words">{ad.page_name || '—'}</div>
                 )}
                 <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2 flex-wrap">
-                  <span>{countryFlag(ad.country)} {ad.country}</span>
+                  <span>{countryFlag(ad.country)} {ad.country?.toUpperCase()}</span>
                   {ad.duplicates_count > 0 && (
                     <span className="text-orange-600">+{ad.duplicates_count} дубл.</span>
                   )}
@@ -178,9 +206,13 @@ export function AdDrawer({ adId, onClose }: Props) {
                       <img src={url} alt="" className="w-full" />
                     )}
                     <div className="p-2 text-right">
-                      <a href={url} download className="text-blue-600 hover:underline text-xs">
+                      <button
+                        type="button"
+                        onClick={() => downloadMedia(url, mediaFilename(ad.library_id, c.media_type, url))}
+                        className="text-blue-600 hover:underline text-xs"
+                      >
                         ⬇ Скачать
-                      </a>
+                      </button>
                     </div>
                   </div>
                 )
@@ -277,9 +309,7 @@ export function AdDrawer({ adId, onClose }: Props) {
                 <div className="text-[11px] uppercase text-gray-400 mb-1">Плейсмент</div>
                 <div className="flex flex-wrap gap-1.5">
                   {ad.platforms.map((p) => (
-                    <span key={p} className="px-2 py-0.5 bg-gray-100 text-gray-700 text-xs rounded-full">
-                      {p}
-                    </span>
+                    <PlatformBadge key={p} name={p} />
                   ))}
                 </div>
               </div>

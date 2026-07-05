@@ -1,3 +1,4 @@
+import re
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -40,6 +41,41 @@ def _normalize_domain(d: str | None) -> str | None:
     return d or None
 
 
+# Реальная длительность открута: от старта (started_at, иначе first_seen_at) до
+# последней активности (last_seen_at). Парсер писал в days_active «дней с последнего
+# парса» → объявления 2021 года показывали 1. Считаем честно и в ответе, и в сортировке.
+_DAYS_ACTIVE_EXPR = func.greatest(
+    1,
+    func.floor(
+        func.extract(
+            "epoch",
+            Ad.last_seen_at - func.coalesce(Ad.started_at, Ad.first_seen_at),
+        )
+        / 86400
+    ),
+)
+
+
+def _dedup_ci(values) -> list[str]:
+    """Дедуп по регистру, сохраняя первое (канонич.) написание. "Apply Now"/"Apply now" → один."""
+    seen: dict[str, str] = {}
+    for v in values:
+        if v is None:
+            continue
+        k = v.strip().lower()
+        if k and k not in seen:
+            seen[k] = v.strip()
+    return sorted(seen.values(), key=str.lower)
+
+
+def _real_days_active(ad) -> int:
+    start = ad.started_at or ad.first_seen_at
+    end = ad.last_seen_at or ad.first_seen_at
+    if not start or not end:
+        return max(1, ad.days_active or 1)
+    return max(1, (end - start).days)
+
+
 # Все фильтры /feed в одном месте — используются и списком, и счётчиком.
 def _apply_ad_filters(
     stmt,
@@ -75,6 +111,7 @@ def _apply_ad_filters(
     spend_min=None,
     eu_country=None,
     used_in_ads_min=None,
+    text_any=None,
 ):
     # Реальные страны показа объявления.
     #  - eu_countries — фактический охват по странам (из EU-прозрачности), когда есть;
@@ -82,30 +119,46 @@ def _apply_ad_filters(
     #    у не-EU объявлений разбивки по странам нет, поэтому считаем их моногео.
     # По этому набору работают И фильтр выбранной страны, И "Кол-во стран" — чтобы они
     # не расходились (баг: PE-конфиг + eu_countries=[Spain] раньше проходил как PE).
+    #  country хранится в разном регистре (pe/PE) → сравниваем в верхнем регистре,
+    #  поэтому "MX" находит и "mx" (баг: страна давала 0). eu_countries — названия
+    #  стран из EU-прозрачности, для не-EU объявлений их нет → берём страну конфига.
     effective_countries = case(
         (func.coalesce(func.array_length(Ad.eu_countries, 1), 0) > 0, Ad.eu_countries),
-        else_=pg_array([Ad.country]),
+        else_=pg_array([func.upper(Ad.country)]),
     )
     _sel_countries = countries or ([country] if country else None)
     if _sel_countries:
         # выбранная страна должна быть среди реальных стран показа (мультигео тоже проходит)
-        stmt = stmt.where(effective_countries.op("&&")(pg_array(_sel_countries)))
+        _sel_upper = [c.upper() for c in _sel_countries if c]
+        stmt = stmt.where(effective_countries.op("&&")(pg_array(_sel_upper)))
     if keyword:
         stmt = stmt.where(Ad.keyword == keyword)
     if vertical:
         stmt = stmt.where(Ad.vertical == vertical)
     if media_type:
-        stmt = stmt.where(Ad.media_type == media_type)
+        # мультивыбор формата (image/video/carousel/...)
+        stmt = stmt.where(Ad.media_type.in_(media_type))
     if cta:
-        stmt = stmt.where(Ad.cta_text.ilike(f"%{cta}%"))
+        # мультивыбор CTA, регистронезависимо, OR
+        stmt = stmt.where(or_(*[Ad.cta_text.ilike(f"%{c}%") for c in cta]))
     if platforms:
         stmt = stmt.where(Ad.platforms.op("&&")(platforms))  # array overlap
+    if text_any:
+        # подкатегории/тематики: ключ есть в body ИЛИ page_name (регистронезависимо), OR
+        stmt = stmt.where(or_(*[
+            or_(Ad.body.ilike(f"%{kw}%"), Ad.page_name.ilike(f"%{kw}%"))
+            for kw in text_any
+        ]))
     if domain:
-        nd = _normalize_domain(domain)
-        if nd:
+        # "Доменная зона": матч по СУФФИКСУ хоста, а не подстроке — ".com" ловит только
+        # домены, оканчивающиеся на .com (не .store). Граница метки слева = ^/./ , справа
+        # = конец/слэш/двоеточие/?/#. Работает и для голого домена (display_url), и для URL.
+        z = domain.strip().lstrip(".").lower()
+        if z:
+            pat = r"(^|[./])" + re.escape(z) + r"([/:?#]|$)"
             stmt = stmt.where(or_(
-                Ad.display_url.ilike(f"%{nd}%"),
-                Ad.link_url.ilike(f"%{nd}%"),
+                Ad.display_url.op("~*")(pat),
+                Ad.link_url.op("~*")(pat),
             ))
     if page_id:
         stmt = stmt.where(Ad.page_id == page_id)
@@ -114,7 +167,8 @@ def _apply_ad_filters(
     if link_contains:
         stmt = stmt.where(Ad.link_url.ilike(f"%{link_contains}%"))
     if language:
-        stmt = stmt.where(Ad.language == language)
+        # мультивыбор языка, регистронезависимо
+        stmt = stmt.where(func.lower(Ad.language).in_([l.lower() for l in language]))
     if lead_form is not None:
         stmt = stmt.where(Ad.lead_form.is_(lead_form))
     if app_store:
@@ -181,14 +235,14 @@ async def list_feed(
     countries: list[str] | None = Query(None),
     keyword: str | None = Query(None),
     vertical: str | None = Query(None),
-    media_type: str | None = Query(None),
-    cta: str | None = Query(None),
+    media_type: list[str] | None = Query(None),
+    cta: list[str] | None = Query(None),
     platforms: list[str] | None = Query(None),
     domain: str | None = Query(None),
     page_id: str | None = Query(None),
     page_name: str | None = Query(None),
     link_contains: str | None = Query(None),
-    language: str | None = Query(None),
+    language: list[str] | None = Query(None),
     lead_form: bool | None = Query(None),
     app_store: str | None = Query(None),
     ecom_platform: str | None = Query(None),
@@ -208,6 +262,7 @@ async def list_feed(
     spend_min: int | None = Query(None),
     eu_country: list[str] | None = Query(None),
     used_in_ads_min: int | None = Query(None),
+    text_any: list[str] | None = Query(None),
     sort: str = Query("newest", regex="^(newest|oldest|days_desc|days_asc)$"),
     limit: int = Query(40, le=1000),
     offset: int = Query(0, ge=0),
@@ -233,7 +288,7 @@ async def list_feed(
         started_from=started_from, started_to=started_to,
         last_seen_from=last_seen_from, last_seen_to=last_seen_to,
         reach_min=reach_min, spend_min=spend_min, eu_country=eu_country,
-        used_in_ads_min=used_in_ads_min,
+        used_in_ads_min=used_in_ads_min, text_any=text_any,
     )
 
     if sort == "newest":
@@ -318,9 +373,9 @@ async def list_feed(
     elif sort == "oldest":
         final_stmt = final_stmt.order_by(Ad.first_seen_at.asc())
     elif sort == "days_desc":
-        final_stmt = final_stmt.order_by(Ad.days_active.desc())
+        final_stmt = final_stmt.order_by(_DAYS_ACTIVE_EXPR.desc())
     elif sort == "days_asc":
-        final_stmt = final_stmt.order_by(Ad.days_active.asc())
+        final_stmt = final_stmt.order_by(_DAYS_ACTIVE_EXPR.asc())
 
     final_stmt = final_stmt.limit(limit).offset(offset)
     items = list((await session.execute(final_stmt)).scalars().all())
@@ -356,6 +411,7 @@ async def list_feed(
         _partner_map = {(r.keyword, r.country): r.partner for r in _cfg_rows}
     for ad in items:
         ad.partner = _partner_map.get((ad.keyword, ad.country)) if ad.keyword else None
+        ad.days_active = _real_days_active(ad)
 
     return items
 
@@ -366,14 +422,14 @@ async def feed_count(
     countries: list[str] | None = Query(None),
     keyword: str | None = Query(None),
     vertical: str | None = Query(None),
-    media_type: str | None = Query(None),
-    cta: str | None = Query(None),
+    media_type: list[str] | None = Query(None),
+    cta: list[str] | None = Query(None),
     platforms: list[str] | None = Query(None),
     domain: str | None = Query(None),
     page_id: str | None = Query(None),
     page_name: str | None = Query(None),
     link_contains: str | None = Query(None),
-    language: str | None = Query(None),
+    language: list[str] | None = Query(None),
     lead_form: bool | None = Query(None),
     app_store: str | None = Query(None),
     ecom_platform: str | None = Query(None),
@@ -393,6 +449,7 @@ async def feed_count(
     spend_min: int | None = Query(None),
     eu_country: list[str] | None = Query(None),
     used_in_ads_min: int | None = Query(None),
+    text_any: list[str] | None = Query(None),
     session: AsyncSession = Depends(get_session),
     _: ClientUser = Depends(get_current_client),
 ):
@@ -414,7 +471,7 @@ async def feed_count(
         started_from=started_from, started_to=started_to,
         last_seen_from=last_seen_from, last_seen_to=last_seen_to,
         reach_min=reach_min, spend_min=spend_min, eu_country=eu_country,
-        used_in_ads_min=used_in_ads_min,
+        used_in_ads_min=used_in_ads_min, text_any=text_any,
     )
     filtered = base.subquery()
 
@@ -462,11 +519,31 @@ async def vertical_counts(
     session: AsyncSession = Depends(get_session),
     _: ClientUser = Depends(get_current_client),
 ):
-    rows = (await session.execute(
-        select(Ad.vertical, func.count(Ad.id))
+    # Считаем ТАК ЖЕ, как верхний счётчик /feed/count — с phash-дедупликацией,
+    # иначе число у вертикали (сырой count) расходится с верхним (дедуплено).
+    base = (
+        select(Ad.id, Ad.vertical)
         .join(ModerationEntry, ModerationEntry.ad_id == Ad.id)
         .where(ModerationEntry.status == ModerationStatus.APPROVED)
-        .group_by(Ad.vertical)
+        .subquery()
+    )
+    first_phash_subq = (
+        select(Creative.ad_id, func.min(Creative.phash).label("phash"))
+        .where(Creative.phash.is_not(None))
+        .group_by(Creative.ad_id)
+        .subquery()
+    )
+    rows = (await session.execute(
+        select(
+            base.c.vertical,
+            func.count(distinct(func.coalesce(
+                first_phash_subq.c.phash, cast(base.c.id, String)
+            ))),
+        )
+        .select_from(base.outerjoin(
+            first_phash_subq, base.c.id == first_phash_subq.c.ad_id
+        ))
+        .group_by(base.c.vertical)
     )).all()
     return {"counts": {(v or "unknown"): c for v, c in rows}}
 
@@ -483,9 +560,11 @@ async def facets(
         .subquery()
     )
 
-    countries = (await session.execute(
-        select(base.c.country).distinct().order_by(base.c.country)
+    countries_raw = (await session.execute(
+        select(base.c.country).distinct()
     )).scalars().all()
+    # Коды стран в БД в разном регистре (pe/PE) — приводим к ЗАГЛАВНЫМ и дедупим.
+    countries = sorted({c.upper() for c in countries_raw if c})
     keywords = (await session.execute(
         select(base.c.keyword).distinct().where(base.c.keyword.is_not(None)).order_by(base.c.keyword)
     )).scalars().all()
@@ -525,8 +604,8 @@ async def facets(
         "keywords": list(keywords),
         "verticals": list(verticals),
         "media_types": list(media_types),
-        "ctas": list(ctas),
-        "languages": list(languages),
+        "ctas": _dedup_ci(ctas),
+        "languages": _dedup_ci(languages),
         "app_stores": list(app_stores),
         "ecom_platforms": list(ecom_platforms),
         "platforms": list(platforms_rows),
@@ -571,6 +650,7 @@ async def get_ad(
     else:
         ad.partner = None
 
+    ad.days_active = _real_days_active(ad)
     return ad
 
 

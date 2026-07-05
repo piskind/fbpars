@@ -6,6 +6,7 @@ type Props = {
   from: string
   to: string
   onChange: (from: string, to: string) => void
+  label?: string
 }
 
 const MONTHS = [
@@ -114,7 +115,7 @@ function MonthGrid({
   )
 }
 
-export function DateRangePicker({ from, to, onChange }: Props) {
+export function DateRangePicker({ from, to, onChange, label: placeholder = 'Дата создания' }: Props) {
   const [open, setOpen] = useState(false)
   const [pickingStart, setPickingStart] = useState(true)
   const [viewMonth, setViewMonth] = useState(() => new Date())
@@ -128,7 +129,7 @@ export function DateRangePicker({ from, to, onChange }: Props) {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  const label = from || to ? `${fmt(from) || '…'} – ${fmt(to) || '…'}` : 'Дата создания'
+  const label = from || to ? `${fmt(from) || '…'} – ${fmt(to) || '…'}` : placeholder
 
   const pick = (s: string) => {
     if (pickingStart || !from || (to && from)) {
