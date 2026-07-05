@@ -131,6 +131,7 @@ def _apply_ad_filters(
     eu_country=None,
     used_in_ads_min=None,
     text_any=None,
+    uncategorized=None,
 ):
     # ── Фильтр страны и "Кол-во стран" РАЗДЕЛЕНЫ, т.к. это про разные вещи ──
     # Простой фильтр "покажи объявления из MX" — по полю ads.country (страна парсинга,
@@ -149,6 +150,10 @@ def _apply_ad_filters(
         # объявления из широких фильтр-парсингов — "Без категории", в конкретную
         # вертикаль не попадают (иначе игры/аппы/unicef из PE-фильтров лезут в Nutra).
         stmt = stmt.where(Ad.vertical == vertical, ~_is_broad_filter_ad())
+    if uncategorized:
+        # "Без категории": объявления без подкатегории/вертикали — из широких
+        # фильтр-парсингов ИЛИ вообще без вертикали.
+        stmt = stmt.where(or_(_is_broad_filter_ad(), Ad.vertical.is_(None)))
     if media_type:
         # мультивыбор формата (image/video/carousel/...)
         stmt = stmt.where(Ad.media_type.in_(media_type))
@@ -312,6 +317,7 @@ async def list_feed(
     eu_country: list[str] | None = Query(None),
     used_in_ads_min: int | None = Query(None),
     text_any: list[str] | None = Query(None),
+    uncategorized: bool | None = Query(None),
     sort: str = Query("newest", regex="^(newest|oldest|days_desc|days_asc)$"),
     limit: int = Query(40, le=1000),
     offset: int = Query(0, ge=0),
@@ -339,6 +345,7 @@ async def list_feed(
         reach_min=reach_min, reach_max=reach_max, spend_min=spend_min,
         spend_max=spend_max, gender=gender, age_min=age_min, age_max=age_max,
         eu_country=eu_country, used_in_ads_min=used_in_ads_min, text_any=text_any,
+        uncategorized=uncategorized,
     )
 
     if sort == "newest":
@@ -513,6 +520,7 @@ async def feed_count(
     eu_country: list[str] | None = Query(None),
     used_in_ads_min: int | None = Query(None),
     text_any: list[str] | None = Query(None),
+    uncategorized: bool | None = Query(None),
     session: AsyncSession = Depends(get_session),
     _: ClientUser = Depends(get_current_client),
 ):
@@ -536,6 +544,7 @@ async def feed_count(
         reach_min=reach_min, reach_max=reach_max, spend_min=spend_min,
         spend_max=spend_max, gender=gender, age_min=age_min, age_max=age_max,
         eu_country=eu_country, used_in_ads_min=used_in_ads_min, text_any=text_any,
+        uncategorized=uncategorized,
     )
     filtered = base.subquery()
 

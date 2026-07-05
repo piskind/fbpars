@@ -82,6 +82,7 @@ type Filters = {
   gamblingSubs: string[]
   nutraNames: string[]
   nutraThemes: string[]
+  uncategorized: boolean
 }
 
 const emptyFilters: Filters = {
@@ -121,6 +122,7 @@ const emptyFilters: Filters = {
   gamblingSubs: [],
   nutraNames: [],
   nutraThemes: [],
+  uncategorized: false,
 }
 
 // Вертикали. active=false → заглушка «в разработке».
@@ -309,20 +311,48 @@ function CountryMultiSelect({
   )
 }
 
-// Мультивыбор чипсов (подкатегории/тематики).
+// Спец-чип «Все» / «Без категории».
+function SpecialChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`px-2.5 py-1 rounded-full text-xs border font-medium transition ${
+        active
+          ? 'bg-gray-800 text-white border-gray-800'
+          : 'bg-white text-gray-600 hover:border-gray-400'
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
+
+// Мультивыбор чипсов (подкатегории/тематики). leading — спец-чипы перед списком.
 function ChipMultiSelect({
   options,
   selected,
   onChange,
+  leading,
 }: {
   options: string[]
   selected: string[]
   onChange: (v: string[]) => void
+  leading?: React.ReactNode
 }) {
   const toggle = (c: string) =>
     onChange(selected.includes(c) ? selected.filter((x) => x !== c) : [...selected, c])
   return (
     <div className="flex flex-wrap gap-1.5">
+      {leading}
       {options.map((c) => {
         const on = selected.includes(c)
         return (
@@ -433,7 +463,10 @@ export function ClientFeedPage() {
     const p = new URLSearchParams()
     p.set('sort', applied.sort)
     applied.countries.forEach((c) => p.append('countries', c))
-    if (applied.vertical) p.set('vertical', applied.vertical)
+    // "Без категории" — отдельный режим (объявления без вертикали/из широких парсов),
+    // он взаимоисключим с фильтром вертикали.
+    if (applied.uncategorized) p.set('uncategorized', 'true')
+    else if (applied.vertical) p.set('vertical', applied.vertical)
     if (applied.search.trim()) {
       p.set('search', applied.search.trim())
       p.set('search_mode', applied.searchMode)
@@ -481,10 +514,12 @@ export function ClientFeedPage() {
     if (applied.gender) p.set('gender', applied.gender)
     if (applied.ageMin) p.set('age_min', applied.ageMin)
     if (applied.ageMax) p.set('age_max', applied.ageMax)
-    // Подкатегории/тематики вертикалей → OR по body/page_name
-    ;[...applied.gamblingSubs, ...applied.nutraNames, ...applied.nutraThemes].forEach((t) =>
-      p.append('text_any', t),
-    )
+    // Подкатегории/тематики вертикалей → OR по body/page_name (не в режиме "Без категории")
+    if (!applied.uncategorized) {
+      ;[...applied.gamblingSubs, ...applied.nutraNames, ...applied.nutraThemes].forEach((t) =>
+        p.append('text_any', t),
+      )
+    }
     return p
   }, [applied])
 
@@ -945,7 +980,7 @@ export function ClientFeedPage() {
                     type="button"
                     disabled={!v.active}
                     onClick={() => {
-                      set({ vertical: selected ? '' : v.key })
+                      set({ vertical: selected ? '' : v.key, uncategorized: false })
                       setOpenVertical(openVertical === v.key ? null : v.key)
                     }}
                     title={v.active ? undefined : 'В разработке'}
@@ -980,18 +1015,46 @@ export function ClientFeedPage() {
                 <ChipMultiSelect
                   options={GAMBLING_SUBS}
                   selected={draft.gamblingSubs}
-                  onChange={(gamblingSubs) => set({ gamblingSubs })}
+                  onChange={(gamblingSubs) => set({ gamblingSubs, uncategorized: false })}
+                  leading={
+                    <>
+                      <SpecialChip
+                        label="Все"
+                        active={!draft.uncategorized && draft.gamblingSubs.length === 0}
+                        onClick={() => set({ gamblingSubs: [], uncategorized: false })}
+                      />
+                      <SpecialChip
+                        label="Без категории"
+                        active={draft.uncategorized}
+                        onClick={() => set({ uncategorized: !draft.uncategorized, gamblingSubs: [] })}
+                      />
+                    </>
+                  }
                 />
               </div>
             )}
             {openVertical === 'nutra' && (
               <div className="mt-3 space-y-3">
+                <div className="flex flex-wrap gap-1.5">
+                  <SpecialChip
+                    label="Все"
+                    active={!draft.uncategorized && !draft.nutraNames.length && !draft.nutraThemes.length}
+                    onClick={() => set({ nutraNames: [], nutraThemes: [], uncategorized: false })}
+                  />
+                  <SpecialChip
+                    label="Без категории"
+                    active={draft.uncategorized}
+                    onClick={() =>
+                      set({ uncategorized: !draft.uncategorized, nutraNames: [], nutraThemes: [] })
+                    }
+                  />
+                </div>
                 <div>
                   <div className="text-[11px] uppercase text-gray-400 mb-1.5">По названию</div>
                   <ChipMultiSelect
                     options={NUTRA_NAMES}
                     selected={draft.nutraNames}
-                    onChange={(nutraNames) => set({ nutraNames })}
+                    onChange={(nutraNames) => set({ nutraNames, uncategorized: false })}
                   />
                 </div>
                 <div>
@@ -999,7 +1062,7 @@ export function ClientFeedPage() {
                   <ChipMultiSelect
                     options={NUTRA_THEMES}
                     selected={draft.nutraThemes}
-                    onChange={(nutraThemes) => set({ nutraThemes })}
+                    onChange={(nutraThemes) => set({ nutraThemes, uncategorized: false })}
                   />
                 </div>
               </div>
