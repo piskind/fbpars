@@ -331,8 +331,29 @@ export function AdDrawer({ adId, onClose }: Props) {
               <div className="text-gray-400">Library ID</div>
               <div className="text-gray-800 break-all">{ad.library_id}</div>
 
+              <div className="text-gray-400">Фанпейдж</div>
+              <div className="text-gray-800 break-all">
+                {pageFbUrl ? (
+                  <a
+                    href={pageFbUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline"
+                  >
+                    {ad.page_name || 'Открыть страницу'}
+                  </a>
+                ) : (
+                  '—'
+                )}
+              </div>
+
               <div className="text-gray-400">Дней активно</div>
               <div className="text-gray-800">{Math.max(1, ad.days_active)}</div>
+
+              <div className="text-gray-400">Загружено</div>
+              <div className="text-gray-800">
+                {new Date(ad.first_seen_at).toLocaleDateString('ru-RU')}
+              </div>
 
               <div className="text-gray-400">Последняя активность</div>
               <div className="text-gray-800">

@@ -2,7 +2,7 @@ import re
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_, and_, distinct, text, String, tuple_, cast
+from sqlalchemy import select, func, or_, and_, distinct, text, String, tuple_, cast, case, exists
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,6 +75,21 @@ def _real_days_active(ad) -> int:
     return max(1, (end - start).days)
 
 
+def _is_broad_filter_ad():
+    """Объявление пришло из широкого парсинга «По фильтрам» (config_type='filters').
+
+    Такие парсы тянут всё подряд по стране (игры/аппы/unicef и т.п.) и в конфиге
+    у них проставлена вертикаль (напр. Нутра) — но по факту это сборная солянка.
+    Считаем их «Без категории»: не относим к конкретной вертикали (Nutra и пр.).
+    Матч по (keyword, country) через EXISTS — NULL-safe.
+    """
+    return exists().where(
+        ParsingConfig.config_type == "filters",
+        ParsingConfig.keyword == Ad.keyword,
+        ParsingConfig.country == Ad.country,
+    )
+
+
 # Все фильтры /feed в одном месте — используются и списком, и счётчиком.
 def _apply_ad_filters(
     stmt,
@@ -126,7 +141,9 @@ def _apply_ad_filters(
     if keyword:
         stmt = stmt.where(Ad.keyword == keyword)
     if vertical:
-        stmt = stmt.where(Ad.vertical == vertical)
+        # объявления из широких фильтр-парсингов — "Без категории", в конкретную
+        # вертикаль не попадают (иначе игры/аппы/unicef из PE-фильтров лезут в Nutra).
+        stmt = stmt.where(Ad.vertical == vertical, ~_is_broad_filter_ad())
     if media_type:
         # мультивыбор формата (image/video/carousel/...)
         stmt = stmt.where(Ad.media_type.in_(media_type))
@@ -400,15 +417,23 @@ async def list_feed(
     # Partner lookup via parsing_configs (keyword + country)
     _keywords = list({ad.keyword for ad in items if ad.keyword})
     _partner_map: dict[tuple, str | None] = {}
+    _cfgtype_map: dict[tuple, str | None] = {}
     if _keywords:
         _cfg_rows = (await session.execute(
-            select(ParsingConfig.keyword, ParsingConfig.country, ParsingConfig.partner)
+            select(
+                ParsingConfig.keyword, ParsingConfig.country,
+                ParsingConfig.partner, ParsingConfig.config_type,
+            )
             .where(ParsingConfig.keyword.in_(_keywords))
         )).all()
         _partner_map = {(r.keyword, r.country): r.partner for r in _cfg_rows}
+        _cfgtype_map = {(r.keyword, r.country): r.config_type for r in _cfg_rows}
     for ad in items:
         ad.partner = _partner_map.get((ad.keyword, ad.country)) if ad.keyword else None
         ad.days_active = _real_days_active(ad)
+        # объявления из широких фильтр-парсингов показываем как "Без категории"
+        if _cfgtype_map.get((ad.keyword, ad.country)) == "filters":
+            ad.vertical = None
 
     return items
 
@@ -519,7 +544,11 @@ async def vertical_counts(
     # Считаем ТАК ЖЕ, как верхний счётчик /feed/count — с phash-дедупликацией,
     # иначе число у вертикали (сырой count) расходится с верхним (дедуплено).
     base = (
-        select(Ad.id, Ad.vertical)
+        select(
+            Ad.id,
+            # широкие фильтр-парсинги → "Без категории" (unknown), не в свою вертикаль
+            case((_is_broad_filter_ad(), None), else_=Ad.vertical).label("vertical"),
+        )
         .join(ModerationEntry, ModerationEntry.ad_id == Ad.id)
         .where(ModerationEntry.status == ModerationStatus.APPROVED)
         .subquery()
@@ -640,10 +669,13 @@ async def get_ad(
 
     if ad.keyword:
         _cfg = (await session.execute(
-            select(ParsingConfig.partner)
+            select(ParsingConfig.partner, ParsingConfig.config_type)
             .where(ParsingConfig.keyword == ad.keyword, ParsingConfig.country == ad.country)
-        )).scalar_one_or_none()
-        ad.partner = _cfg
+        )).first()
+        ad.partner = _cfg.partner if _cfg else None
+        # объявления из широких фильтр-парсингов показываем как "Без категории"
+        if _cfg and _cfg.config_type == "filters":
+            ad.vertical = None
     else:
         ad.partner = None
 
