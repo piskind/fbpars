@@ -1068,22 +1068,6 @@ export function ClientFeedPage() {
               </div>
             )}
           </div>
-
-          {/* Actions */}
-          <div className="flex gap-2 pt-3 mt-3 border-t">
-            <button
-              onClick={apply}
-              className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
-            >
-              Найти
-            </button>
-            <button
-              onClick={reset}
-              className="px-3 py-2 text-sm text-gray-500 hover:text-gray-700"
-            >
-              Сбросить
-            </button>
-          </div>
         </div>
 
         {/* ── Ad grid ── */}
