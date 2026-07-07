@@ -1033,9 +1033,10 @@ export function ClientFeedPage() {
                 />
               </div>
             )}
-            {openVertical === 'nutra' && (
-              <div className="mt-3 space-y-3">
-                <div className="flex flex-wrap gap-1.5">
+            {openVertical === 'nutra' && (() => {
+              // «Все» / «Без категории» — общие для секции Nutra, показываем в каждом списке.
+              const nutraLeading = (
+                <>
                   <SpecialChip
                     label="Все"
                     active={!draft.uncategorized && !draft.nutraNames.length && !draft.nutraThemes.length}
@@ -1048,25 +1049,31 @@ export function ClientFeedPage() {
                       set({ uncategorized: !draft.uncategorized, nutraNames: [], nutraThemes: [] })
                     }
                   />
+                </>
+              )
+              return (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <div className="text-[11px] uppercase text-gray-400 mb-1.5">По названию</div>
+                    <ChipMultiSelect
+                      options={NUTRA_NAMES}
+                      selected={draft.nutraNames}
+                      onChange={(nutraNames) => set({ nutraNames, uncategorized: false })}
+                      leading={nutraLeading}
+                    />
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase text-gray-400 mb-1.5">По тематике</div>
+                    <ChipMultiSelect
+                      options={NUTRA_THEMES}
+                      selected={draft.nutraThemes}
+                      onChange={(nutraThemes) => set({ nutraThemes, uncategorized: false })}
+                      leading={nutraLeading}
+                    />
+                  </div>
                 </div>
-                <div>
-                  <div className="text-[11px] uppercase text-gray-400 mb-1.5">По названию</div>
-                  <ChipMultiSelect
-                    options={NUTRA_NAMES}
-                    selected={draft.nutraNames}
-                    onChange={(nutraNames) => set({ nutraNames, uncategorized: false })}
-                  />
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase text-gray-400 mb-1.5">По тематике</div>
-                  <ChipMultiSelect
-                    options={NUTRA_THEMES}
-                    selected={draft.nutraThemes}
-                    onChange={(nutraThemes) => set({ nutraThemes, uncategorized: false })}
-                  />
-                </div>
-              </div>
-            )}
+              )
+            })()}
           </div>
         </div>
 
