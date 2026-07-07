@@ -728,7 +728,7 @@ export function ClientFeedPage() {
                   <option value="">Все</option>
                   {facets?.verticals.map((v) => (
                     <option key={v} value={v}>
-                      {v}
+                      {v === 'general' ? 'Общее' : v}
                     </option>
                   ))}
                 </select>

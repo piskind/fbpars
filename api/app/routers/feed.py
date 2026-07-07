@@ -83,10 +83,13 @@ def _is_broad_filter_ad():
     Считаем их «Без категории»: не относим к конкретной вертикали (Nutra и пр.).
     Матч по (keyword, country) через EXISTS — NULL-safe.
     """
+    # keyword у широких фильтр-конфигов = NULL, и у их объявлений keyword тоже NULL.
+    # Обычное "=" при NULL=NULL даёт NULL (не TRUE) → раньше правило ловило 0.
+    # IS NOT DISTINCT FROM — NULL-safe сравнение.
     return exists().where(
         ParsingConfig.config_type == "filters",
-        ParsingConfig.keyword == Ad.keyword,
         ParsingConfig.country == Ad.country,
+        ParsingConfig.keyword.is_not_distinct_from(Ad.keyword),
     )
 
 
@@ -151,9 +154,13 @@ def _apply_ad_filters(
         # вертикаль не попадают (иначе игры/аппы/unicef из PE-фильтров лезут в Nutra).
         stmt = stmt.where(Ad.vertical == vertical, ~_is_broad_filter_ad())
     if uncategorized:
-        # "Без категории": объявления без подкатегории/вертикали — из широких
-        # фильтр-парсингов ИЛИ вообще без вертикали.
-        stmt = stmt.where(or_(_is_broad_filter_ad(), Ad.vertical.is_(None)))
+        # "Без категории" / "Общее": объявления из широких фильтр-парсингов,
+        # либо без вертикали, либо помеченные vertical='general' (после backfill).
+        stmt = stmt.where(or_(
+            _is_broad_filter_ad(),
+            Ad.vertical.is_(None),
+            Ad.vertical == "general",
+        ))
     if media_type:
         # мультивыбор формата (image/video/carousel/...)
         stmt = stmt.where(Ad.media_type.in_(media_type))
@@ -597,8 +604,11 @@ async def vertical_counts(
     base = (
         select(
             Ad.id,
-            # широкие фильтр-парсинги → "Без категории" (unknown), не в свою вертикаль
-            case((_is_broad_filter_ad(), None), else_=Ad.vertical).label("vertical"),
+            # широкие фильтр-парсинги / general → "Без категории" (unknown), не в вертикаль
+            case(
+                (or_(_is_broad_filter_ad(), Ad.vertical == "general"), None),
+                else_=Ad.vertical,
+            ).label("vertical"),
         )
         .join(ModerationEntry, ModerationEntry.ad_id == Ad.id)
         .where(ModerationEntry.status == ModerationStatus.APPROVED)

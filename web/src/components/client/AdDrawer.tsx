@@ -321,7 +321,9 @@ export function AdDrawer({ adId, onClose }: Props) {
               <div className="text-gray-800">{ad.keyword || '—'}</div>
 
               <div className="text-gray-400">Вертикаль</div>
-              <div className="text-gray-800">{ad.vertical || '—'}</div>
+              <div className="text-gray-800">
+                {ad.vertical === 'general' ? 'Общее' : ad.vertical || '—'}
+              </div>
 
               <div className="text-gray-400">Партнёрка</div>
               <div className={ad.partner ? 'font-medium text-indigo-700' : 'text-gray-800'}>
