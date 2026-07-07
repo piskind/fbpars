@@ -163,6 +163,14 @@ def _apply_ad_filters(
             Ad.vertical.is_(None),
             Ad.vertical == "general",
         ))
+    elif not vertical:
+        # Дефолтный вид "Все" не показывает мусор без категории (general/null/broad) —
+        # он доступен только через чип "Без категории" или вертикаль "Общее".
+        stmt = stmt.where(
+            Ad.vertical.is_not(None),
+            Ad.vertical != "general",
+            ~_is_broad_filter_ad(),
+        )
     if media_type:
         # мультивыбор формата (image/video/carousel/...)
         stmt = stmt.where(Ad.media_type.in_(media_type))
