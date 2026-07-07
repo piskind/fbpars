@@ -150,9 +150,11 @@ def _apply_ad_filters(
     if keyword:
         stmt = stmt.where(Ad.keyword == keyword)
     if vertical:
-        # объявления из широких фильтр-парсингов — "Без категории", в конкретную
-        # вертикаль не попадают (иначе игры/аппы/unicef из PE-фильтров лезут в Nutra).
-        stmt = stmt.where(Ad.vertical == vertical, ~_is_broad_filter_ad())
+        stmt = stmt.where(Ad.vertical == vertical)
+        if vertical != "general":
+            # в конкретную вертикаль (Nutra и пр.) объявления из широких фильтр-парсингов
+            # не пускаем; для самой "Общее" (general) — наоборот, показываем их.
+            stmt = stmt.where(~_is_broad_filter_ad())
     if uncategorized:
         # "Без категории" / "Общее": объявления из широких фильтр-парсингов,
         # либо без вертикали, либо помеченные vertical='general' (после backfill).
