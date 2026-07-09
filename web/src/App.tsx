@@ -12,6 +12,7 @@ import { Layout } from './components/Layout'
 import { ClientSignupPage } from './pages/client/Signup'
 import { ClientLoginPage } from './pages/client/Login'
 import { ClientVerifyPage } from './pages/client/Verify'
+import { ClientHomePage } from './pages/client/Home'
 import { ClientFeedPage } from './pages/client/Feed'
 import { ClientLayout } from './components/client/ClientLayout'
 import { ClientPrivateRoute } from './components/client/ClientPrivateRoute'
@@ -57,7 +58,7 @@ function App() {
               <ClientPrivateRoute>
                 <ClientLayout>
                   <Routes>
-                    <Route path="/" element={<Navigate to="/feed" replace />} />
+                    <Route path="/" element={<ClientHomePage />} />
                     <Route path="/feed" element={<ClientFeedPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
