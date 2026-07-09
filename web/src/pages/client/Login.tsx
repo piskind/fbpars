@@ -17,7 +17,7 @@ export function ClientLoginPage() {
   const onSubmit = async () => {
     setVerifyUrl(null)
     const ok = await signIn(email, password)
-    if (ok) nav('/')
+    if (ok) nav('/feed')
   }
 
   const onResend = async () => {
