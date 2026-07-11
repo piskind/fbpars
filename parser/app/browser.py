@@ -1,8 +1,10 @@
 import asyncio
 import json
 import random
+import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlencode
 from playwright.async_api import async_playwright, Browser, BrowserContext
 from app.config import settings
@@ -11,6 +13,46 @@ from loguru import logger
 # At most one Chromium process alive at a time.
 # Prevents refresh_worker + discovery_poll + manual tools from stacking 2-3 × 2.7 GB.
 _BROWSER_SEMAPHORE = asyncio.Semaphore(1)
+
+# Token capture is short-lived (open → grab tokens → close), so we allow a small pool
+# of concurrent Chromium instances just for that, independent of the heavy path above.
+_TOKEN_SEMAPHORE = asyncio.Semaphore(max(1, settings.token_browser_concurrency))
+
+# Resource types blocked to keep the browser context light (~100 MB instead of ~2.5 GB).
+# We only need the DOM + GraphQL traffic; images/video/CSS/fonts are pure overhead here.
+_BLOCKED_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
+
+
+async def _block_heavy_resources(context: BrowserContext) -> None:
+    async def _route(route):
+        try:
+            if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
+                await route.abort()
+            else:
+                await route.continue_()
+        except Exception:
+            # Route may already be handled/closed during teardown — ignore.
+            pass
+
+    await context.route("**/*", _route)
+
+
+@dataclass
+class SessionTokens:
+    """Everything needed to POST AdLibrarySearchPaginationQuery without a browser."""
+    cookies: str = ""
+    lsd: str | None = None
+    doc_id: str | None = None
+    base_form_data: dict = field(default_factory=dict)
+    variables_template: dict = field(default_factory=dict)
+    captured_at: float = 0.0
+
+    def as_tokens_dict(self) -> dict:
+        """Compat shape for graphql_client._build_form_data (expects base_form_data/lsd/doc_id)."""
+        d: dict = {"base_form_data": self.base_form_data, "lsd": self.lsd}
+        if self.doc_id:
+            d["doc_id"] = self.doc_id
+        return d
 
 
 USER_AGENT = (
@@ -21,8 +63,19 @@ USER_AGENT = (
 
 
 @asynccontextmanager
-async def browser_context():
-    async with _BROWSER_SEMAPHORE:
+async def browser_context(
+    block_resources: bool = False,
+    semaphore: asyncio.Semaphore | None = None,
+):
+    """Launch a locked-down Chromium context.
+
+    block_resources=True aborts image/media/font/CSS loads (light ~100 MB context) —
+    use it for token capture and the browser-fetch fallback where we never render media.
+    semaphore lets callers use the short-lived _TOKEN_SEMAPHORE pool instead of the
+    global single-Chromium _BROWSER_SEMAPHORE.
+    """
+    sem = semaphore or _BROWSER_SEMAPHORE
+    async with sem:
         async with async_playwright() as pw:
             browser: Browser = await pw.chromium.launch(
                 headless=settings.headless,
@@ -49,6 +102,8 @@ async def browser_context():
                 locale="en-US",
                 timezone_id="America/New_York",
             )
+            if block_resources:
+                await _block_heavy_resources(context)
             await context.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
@@ -232,6 +287,82 @@ async def extract_session_tokens(url: str) -> dict:
         captured["cookies"] = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
     logger.info(f"[tokens] extracted: {list(captured.keys())}")
     return captured
+
+
+async def capture_session_tokens(url: str) -> SessionTokens:
+    """Phase 1 token capture: open a light browser, grab the pagination tokens, close.
+
+    Blocks images/media/CSS/fonts, fires the first AdLibrarySearchPaginationQuery,
+    captures cookies + form template, then closes the browser immediately. The returned
+    SessionTokens drives browser-less pagination in graphql_paginator.
+    """
+    captured: dict = {}
+    async with browser_context(block_resources=True, semaphore=_TOKEN_SEMAPHORE) as context:
+        page = await context.new_page()
+        _, pagination_event = await _setup_token_capture(page, captured)
+        await _load_and_scroll(page, url, pagination_event)
+
+        try:
+            await asyncio.wait_for(pagination_event.wait(), timeout=25.0)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"[tokens] no AdLibrarySearchPaginationQuery fired at {url}")
+
+        if not captured.get("base_form_data"):
+            raise RuntimeError("[tokens] pagination fired but base_form_data not captured")
+
+        cookies = await context.cookies()
+        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+
+    base = captured["base_form_data"]
+    try:
+        variables_template = json.loads(base.get("variables", "{}"))
+    except Exception:
+        variables_template = {}
+
+    tokens = SessionTokens(
+        cookies=cookie_str,
+        lsd=captured.get("lsd"),
+        doc_id=captured.get("doc_id"),
+        base_form_data=base,
+        variables_template=variables_template,
+        captured_at=time.time(),
+    )
+    logger.info(
+        f"[tokens] captured session (doc_id={tokens.doc_id}, "
+        f"form_fields={len(base)}, has_lsd={bool(tokens.lsd)})"
+    )
+    return tokens
+
+
+@asynccontextmanager
+async def browser_fetch_session(url: str):
+    """Fallback transport: a resource-blocked browser page kept open for in-page fetch().
+
+    Navigates to the FB Ad Library URL once (handling __rd_verify) so fetch() inherits the
+    browser's TLS fingerprint + cookies (curl_cffi sometimes trips 1675004). Yields an async
+    fetch(form_data, lsd) -> (status, text) callable. Used only when curl_cffi keeps failing.
+    """
+    async with browser_context(block_resources=True, semaphore=_TOKEN_SEMAPHORE) as context:
+        page = await context.new_page()
+        loaded = await goto_with_challenge_retry(page, url)
+        if not loaded:
+            raise RuntimeError(f"[browser-fetch] page load failed: {url}")
+
+        async def _fetch(form_data: dict, lsd: str | None) -> tuple[int, str]:
+            body = urlencode(form_data)
+            headers = {
+                "content-type": "application/x-www-form-urlencoded",
+                "x-fb-friendly-name": "AdLibrarySearchPaginationQuery",
+                "x-fb-lsd": lsd or "",
+                "x-asbd-id": "359341",
+            }
+            result = await page.evaluate(
+                _FETCH_SCRIPT,
+                {"url": "https://www.facebook.com/api/graphql/", "body": body, "headers": headers},
+            )
+            return result["status"], result["text"]
+
+        yield _fetch
 
 
 class _RateLimited(Exception):

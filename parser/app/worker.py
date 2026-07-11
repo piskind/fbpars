@@ -15,6 +15,7 @@ from app.browser import (
 from app.parsers.library_card import parse_card_text
 from app.parsers.library_extractor import scroll_and_collect
 from app.graphql_client import map_graphql_card
+from app.graphql_paginator import paginate
 from app.repository import upsert_ad, save_creative
 from app.storage import MediaUploader
 from app.proxy import rotate_ip, current_ip
@@ -53,14 +54,21 @@ async def _upload_card_media(
             else:
                 fail_count += 1
 
-        for idx, vid_url in enumerate(card.video_urls[:2]):
-            upload = await uploader.upload_video(card.library_id, vid_url, idx)
-            if upload:
-                vid_uploads.append(upload)
-            else:
-                fail_count += 1
+        # Video is the heaviest traffic and the server has a transfer cap — skip it on the
+        # first pass by default (SKIP_VIDEO_FIRST_PASS). Poster still represents the ad.
+        if settings.skip_video_first_pass:
+            if card.video_urls:
+                s["video_skipped"] = len(card.video_urls[:2])
+        else:
+            for idx, vid_url in enumerate(card.video_urls[:2]):
+                upload = await uploader.upload_video(card.library_id, vid_url, idx)
+                if upload:
+                    vid_uploads.append(upload)
+                else:
+                    fail_count += 1
 
-        if not card.image_urls and not card.video_urls:
+        # Fall back to poster images when there are no images AND we didn't just save videos.
+        if not card.image_urls and not vid_uploads:
             for idx, poster_url in enumerate(card.poster_urls[:2]):
                 upload = await uploader.upload_image(card.library_id, poster_url, idx)
                 if upload:
@@ -71,6 +79,16 @@ async def _upload_card_media(
     s["media_fail"] = fail_count
     media_saved = len(img_uploads) + len(vid_uploads)
     s["media_ok"] = media_saved
+
+    # Track real downloaded traffic (phash-reused uploads cost nothing) — server has a cap.
+    downloaded_bytes = sum(
+        u.get("file_size") or 0
+        for u in (img_uploads + vid_uploads)
+        if not u.get("reused")
+    )
+    s["bytes_downloaded"] = downloaded_bytes
+    if downloaded_bytes:
+        logger.info(f"[#{config_id}] {card.library_id}: downloaded {downloaded_bytes / 1_048_576:.1f} MB")
 
     for upload in img_uploads:
         if not upload.get("reused"):
@@ -196,17 +214,72 @@ async def _run_media_phase(
     return stats
 
 
+async def _dispatch_media(
+    media_tasks,
+    config: ParsingConfig,
+    uploader: MediaUploader,
+    period_tag: str,
+) -> dict:
+    """Phase 4: either enqueue one media job per ad (split pipeline) or upload inline.
+
+    In the split path, metadata is already committed; media (image + phash-dedup, video
+    deferred by SKIP_VIDEO_FIRST_PASS) runs on the dedicated media queue / media-worker.
+    """
+    if not media_tasks:
+        return {}
+
+    if settings.split_media_pipeline and settings.use_queue:
+        from app.queue import media_queue
+        from app.tasks import process_media
+        from rq.job import Job
+
+        q = media_queue()
+        conn = q.connection
+        enqueued = 0
+        for ad_id, card in media_tasks:
+            jid = f"media:{ad_id}"
+            if Job.exists(jid, connection=conn):
+                continue
+            q.enqueue(
+                process_media,
+                kwargs={
+                    "ad_id": ad_id,
+                    "library_id": card.library_id,
+                    "image_urls": list(card.image_urls or []),
+                    "video_urls": list(card.video_urls or []),
+                    "poster_urls": list(card.poster_urls or []),
+                    "config_id": config.id,
+                },
+                job_id=jid,
+                job_timeout=settings.media_job_timeout,
+                result_ttl=1800,
+                failure_ttl=86400,
+            )
+            enqueued += 1
+        logger.info(f"[#{config.id}]{period_tag} enqueued {enqueued} media job(s)")
+        return {"media_enqueued": enqueued}
+
+    return await _run_media_phase(media_tasks, config, uploader, period_tag)
+
+
 
 async def _scrape_single_period_graphql(
     url: str,
     config: ParsingConfig,
     uploader: MediaUploader,
     period_tag: str = "",
+    cursor_start: str | None = None,
 ) -> dict:
-    """GraphQL path: in-page fetch pagination (default) or scroll+interception. Raises on failure."""
+    """GraphQL path: browser-less pagination (Phase 1) with legacy browser paths as fallback."""
     stats = dict(_EMPTY_STATS)
 
     if settings.graphql_mode == "fetch":
+        logger.info(
+            f"[#{config.id}]{period_tag} starting browser-less pagination "
+            f"(mode={settings.pagination_mode})"
+        )
+        raw_nodes = await paginate(url, start_cursor=cursor_start)
+    elif settings.graphql_mode == "page_fetch":
         logger.info(f"[#{config.id}]{period_tag} starting browser-GraphQL scrape (in-page fetch pagination)")
         raw_nodes = await scrape_via_page_fetch(url)
     else:
@@ -219,7 +292,7 @@ async def _scrape_single_period_graphql(
     for k, v in phase1.items():
         stats[k] = stats.get(k, 0) + v
 
-    phase2 = await _run_media_phase(media_tasks, config, uploader, period_tag)
+    phase2 = await _dispatch_media(media_tasks, config, uploader, period_tag)
     for k, v in phase2.items():
         stats[k] = stats.get(k, 0) + v
 
@@ -270,7 +343,7 @@ async def _scrape_single_period_playwright(
         for k, v in phase1.items():
             stats[k] = stats.get(k, 0) + v
 
-        phase2 = await _run_media_phase(media_tasks, config, uploader, period_tag)
+        phase2 = await _dispatch_media(media_tasks, config, uploader, period_tag)
         for k, v in phase2.items():
             stats[k] = stats.get(k, 0) + v
 
@@ -286,11 +359,12 @@ async def _scrape_single_period(
     config: ParsingConfig,
     uploader: MediaUploader,
     period_tag: str = "",
+    cursor_start: str | None = None,
 ) -> dict:
     """Dispatch to GraphQL or Playwright path based on settings.use_graphql."""
     if settings.use_graphql:
         try:
-            return await _scrape_single_period_graphql(url, config, uploader, period_tag)
+            return await _scrape_single_period_graphql(url, config, uploader, period_tag, cursor_start)
         except Exception as exc:
             logger.warning(
                 f"[#{config.id}]{period_tag} GraphQL path failed: {exc} — falling back to Playwright"
@@ -382,6 +456,58 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
 
     logger.info(f"[#{config.id}] DONE: {total_stats}")
     return total_stats
+
+
+def _build_url_for_config(config: ParsingConfig, date_from: date | None, date_to: date | None) -> str:
+    """Build the Ad Library URL for one config over one date chunk (shared by run_once & chunk jobs)."""
+    ad_type = (config.category or "all") if config.config_type in ("filters", "fanpage") else "all"
+    return build_library_url(
+        config.country, config.keyword, config.languages,
+        active_status=config.active_status or "all",
+        media_type=config.media_type_filter or "all",
+        platforms=config.platforms,
+        date_from=date_from,
+        date_to=date_to,
+        advertiser=config.advertiser,
+        ad_type=ad_type,
+        sort_mode=getattr(config, "sort_mode", "total_impressions") or "total_impressions",
+        sort_direction=getattr(config, "sort_direction", "desc") or "desc",
+        is_targeted_country=getattr(config, "is_targeted_country", None),
+    )
+
+
+async def process_chunk(
+    config_id: int,
+    date_from: date | None,
+    date_to: date | None,
+    cursor_start: str | None = None,
+) -> dict:
+    """Process ONE (config, date-chunk) unit — the RQ job body (Phase 2).
+
+    Self-contained: own DB session, own MediaUploader. Idempotent via upsert_ad, so a
+    crashed chunk can be safely re-run without restarting the whole geo.
+    """
+    async with AsyncSessionLocal() as session:
+        config = await session.get(ParsingConfig, config_id)
+    if config is None:
+        logger.error(f"[chunk] config #{config_id} not found")
+        return {"error": f"config {config_id} not found"}
+
+    uploader = MediaUploader()
+    url = _build_url_for_config(config, date_from, date_to)
+    period_tag = f" [{date_from}..{date_to}]" if date_from or date_to else ""
+    logger.info(f"[#{config_id}]{period_tag} chunk start → {url}")
+
+    stats = await _scrape_single_period(url, config, uploader, period_tag, cursor_start)
+
+    async with AsyncSessionLocal() as session:
+        cfg = await session.get(ParsingConfig, config_id)
+        if cfg:
+            cfg.last_parsed_at = datetime.now(timezone.utc)
+            await session.commit()
+
+    logger.info(f"[#{config_id}]{period_tag} chunk done: {stats}")
+    return stats
 
 
 CONFIG_CONCURRENCY = 3

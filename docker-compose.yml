@@ -1,8 +1,16 @@
+# Shared log rotation — a runaway parser log once filled the disk.
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: spy_postgres
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -17,38 +25,122 @@ services:
       timeout: 5s
       retries: 5
 
+  spy_redis:
+    image: redis:7-alpine
+    container_name: spy_redis
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   gost:
     image: ginuerzh/gost:latest
     container_name: spy_gost
     restart: unless-stopped
+    logging: *default-logging
     command: >
       -L=http://:8888
       -F=${PROXY_TYPE}://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}
     ports:
       - "8888:8888"
 
+  # Coordinator + discovery poll loop: watches ParserRun(triggered), fans out RQ chunk
+  # jobs, monitors them to completion. No heavy pagination here → modest memory.
   parser:
     build:
       context: ./parser
       dockerfile: Dockerfile
     container_name: spy_parser
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - .env
     environment:
       PROXY_HTTP_GATEWAY: http://gost:8888
+      REDIS_URL: ${REDIS_URL:-redis://spy_redis:6379/0}
     depends_on:
       postgres:
         condition: service_healthy
+      spy_redis:
+        condition: service_started
       gost:
         condition: service_started
     volumes:
       - ./parser:/app
     command: ["python", "-m", "app.main"]
+    ulimits:
+      core: 0          # Chromium was dumping multi-GB cores on crash
     deploy:
       resources:
         limits:
-          memory: 3g
+          memory: 512m
+
+  # Scalable pagination workers — pull chunk jobs off the "parse" queue.
+  # Browser-less pagination (curl_cffi) keeps each worker light (~200-400 MB);
+  # a short-lived Chromium only appears during token capture / browser fallback.
+  parser-worker:
+    build:
+      context: ./parser
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    logging: *default-logging
+    env_file:
+      - .env
+    environment:
+      PROXY_HTTP_GATEWAY: http://gost:8888
+      REDIS_URL: ${REDIS_URL:-redis://spy_redis:6379/0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      spy_redis:
+        condition: service_started
+      gost:
+        condition: service_started
+    volumes:
+      - ./parser:/app
+    command: ["rq", "worker", "--url", "${REDIS_URL:-redis://spy_redis:6379/0}", "parse"]
+    ulimits:
+      core: 0
+    deploy:
+      replicas: ${PARSER_WORKERS:-4}
+      resources:
+        limits:
+          memory: 700m
+
+  # Media workers — download + phash-dedup + S3, off the "media" queue. Video is skipped
+  # on the first pass (SKIP_VIDEO_FIRST_PASS) to respect the server's transfer cap.
+  media-worker:
+    build:
+      context: ./parser
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    logging: *default-logging
+    env_file:
+      - .env
+    environment:
+      PROXY_HTTP_GATEWAY: http://gost:8888
+      REDIS_URL: ${REDIS_URL:-redis://spy_redis:6379/0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      spy_redis:
+        condition: service_started
+      gost:
+        condition: service_started
+    volumes:
+      - ./parser:/app
+    command: ["rq", "worker", "--url", "${REDIS_URL:-redis://spy_redis:6379/0}", "media"]
+    ulimits:
+      core: 0
+    deploy:
+      replicas: ${MEDIA_WORKERS:-2}
+      resources:
+        limits:
+          memory: 512m
 
   refresh:
     build:
@@ -56,10 +148,12 @@ services:
       dockerfile: Dockerfile
     container_name: spy_refresh
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - .env
     environment:
       PROXY_HTTP_GATEWAY: http://gost:8888
+      REDIS_URL: ${REDIS_URL:-redis://spy_redis:6379/0}
       SHELL: /usr/bin/sh
     depends_on:
       postgres:
@@ -69,16 +163,19 @@ services:
     volumes:
       - ./parser:/app
     command: ["python", "-m", "app.scheduler"]
+    ulimits:
+      core: 0
     deploy:
       resources:
         limits:
-          memory: 3g
+          memory: 1g
 
   migrate:
     build:
       context: ./api
       dockerfile: Dockerfile
     container_name: spy_migrate
+    logging: *default-logging
     env_file:
       - .env
     depends_on:
@@ -95,6 +192,7 @@ services:
       dockerfile: Dockerfile
     container_name: spy_api
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - .env
     ports:

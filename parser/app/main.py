@@ -26,7 +26,6 @@ async def _log_flush_loop(run_id: int, log_lines: list[str], stop: asyncio.Event
 async def _run_discovery(run_id: int) -> None:
     from app.db import AsyncSessionLocal
     from app.models import ParserRun
-    from app.worker import run_once
 
     log_lines: list[str] = []
 
@@ -40,7 +39,12 @@ async def _run_discovery(run_id: int) -> None:
     stop = asyncio.Event()
     flush_task = asyncio.create_task(_log_flush_loop(run_id, log_lines, stop))
     try:
-        stats = await run_once()
+        if settings.use_queue:
+            from app.coordinator import run_discovery_via_queue
+            stats = await run_discovery_via_queue(run_id)
+        else:
+            from app.worker import run_once
+            stats = await run_once()
     except Exception as exc:
         logger.error(f"[discovery] fatal: {exc}")
         stats = {"error": str(exc)}

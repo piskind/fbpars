@@ -8,9 +8,10 @@ from loguru import logger
 
 from app.db import AsyncSessionLocal
 from app.models import Ad
-from app.browser import browser_context, goto_with_challenge_retry
+from app.browser import browser_context, goto_with_challenge_retry, capture_session_tokens, build_library_url_country_only
 from app.parsers.library_card import parse_card_text
-from app.proxy import rotate_ip
+from app.proxy import rotate_ip, get_proxy_url
+from app.config import settings
 
 _SPEND_CPM = float(os.getenv("SPEND_CPM", "12"))
 
@@ -399,6 +400,78 @@ async def _check_ad_in_context(
     return False, found_url2 or found_url, reach_data2 or reach_data
 
 
+# ── Phase 5: experimental browser-less is_active refresh (gated by REFRESH_MODE=graphql) ──
+#
+# TODO(live-validate): This reuses AdLibrarySearchPaginationQuery tokens and searches the
+# Ad Library by each ad's library_id (FB's search box accepts an ad ID). The exact FB-internal
+# variables key that carries the search text can't be validated here (prod IP is banned), so
+# this path is CONSERVATIVE: it returns is_active only when it confidently matches the node by
+# id, otherwise None (unknown → refresh_batch will NOT deactivate). It does NOT extract EU
+# reach or the landing URL — those come from the DOM detail panel and stay on the browser path.
+# Once the query shape is confirmed on a clean IP, this replaces the per-ad browser navigation.
+
+async def _graphql_is_active(session, tokens, ad: Ad) -> bool | None:
+    from app.graphql_client import _build_form_data, _parse_response_json, _extract_ads_and_cursor
+
+    # Candidate variable keys FB may use to carry the free-text query (search box accepts IDs).
+    template = dict(tokens.variables_template)
+    variables = {**template, "cursor": None}
+    for key in ("queryString", "searchQuery", "query", "q", "keyword", "freeText"):
+        if key in variables:
+            variables[key] = ad.library_id
+            break
+    else:
+        # Unknown query shape — can't safely target this ad. Signal 'unknown'.
+        return None
+
+    form_data = _build_form_data(tokens.as_tokens_dict(), variables)
+    headers = {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-fb-friendly-name": "AdLibrarySearchPaginationQuery",
+        "x-fb-lsd": tokens.lsd or "",
+        "x-asbd-id": "359341",
+        "cookie": tokens.cookies,
+    }
+    proxy_url = await get_proxy_url()
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+    try:
+        resp = await session.post(
+            "https://www.facebook.com/api/graphql/",
+            data=form_data, headers=headers,
+            impersonate=settings.curl_impersonate, proxies=proxies, timeout=settings.curl_timeout,
+        )
+        if "1675004" in resp.text or resp.status_code != 200:
+            return None
+        nodes, _, _ = _extract_ads_and_cursor(_parse_response_json(resp.text))
+    except Exception as exc:
+        logger.warning(f"[refresh-gql] {ad.library_id}: {exc}")
+        return None
+
+    for node in nodes:
+        if str(node.get("id") or "") == ad.library_id:
+            return bool(node.get("is_active"))
+    # Node not returned by search → most likely gone, but be conservative (unknown).
+    return None
+
+
+async def _process_group_graphql(
+    ads: list[Ad], tokens,
+) -> list[tuple[Ad, bool | None, str | None, dict | None, bool]]:
+    """Browser-less is_active check for a group; url/reach stay None (browser-only features)."""
+    from curl_cffi.requests import AsyncSession as CurlAsyncSession
+
+    out = []
+    async with CurlAsyncSession() as session:
+        for ad in ads:
+            try:
+                is_active = await _graphql_is_active(session, tokens, ad)
+                out.append((ad, is_active, None, None, False))
+            except Exception as e:
+                logger.error(f"[refresh-gql] {ad.library_id}: group error {e}")
+                out.append((ad, None, None, None, True))
+    return out
+
+
 async def _process_group(
     ads: list[Ad],
 ) -> list[tuple[Ad, bool | None, str | None, dict | None, bool]]:
@@ -406,7 +479,9 @@ async def _process_group(
 
     Returns list of (ad, is_active, found_url, reach_data, is_error).
     """
-    async with browser_context() as context:
+    # Block images/media/fonts/CSS: the EU reach panel is DOM text + tables (innerText /
+    # <td> cells), so blocking heavy resources keeps parity while cutting memory + traffic.
+    async with browser_context(block_resources=True) as context:
         raw = await asyncio.gather(
             *[_check_ad_in_context(context, ad.library_id) for ad in ads],
             return_exceptions=True,
@@ -452,17 +527,32 @@ async def refresh_batch(limit: int | None = BATCH_SIZE) -> dict:
         ads = await _get_active_ads(session, limit)
 
     groups = [ads[i:i + GROUP_SIZE] for i in range(0, len(ads), GROUP_SIZE)]
+    use_graphql = settings.refresh_mode == "graphql"
     logger.info(
         f"[refresh] Starting batch of {len(ads)} active ads "
-        f"({len(groups)} groups × {GROUP_SIZE})"
+        f"({len(groups)} groups × {GROUP_SIZE}) mode={settings.refresh_mode}"
     )
+
+    # In graphql mode, capture one token session up front and reuse it across all groups
+    # (browser-less is_active checks). Reach/URL enrichment stays on the browser path.
+    gql_tokens = None
+    if use_graphql and ads:
+        try:
+            token_url = build_library_url_country_only(ads[0].country or "US")
+            gql_tokens = await capture_session_tokens(token_url)
+        except Exception as e:
+            logger.warning(f"[refresh] graphql token capture failed ({e}) — falling back to browser mode")
+            use_graphql = False
 
     for g_idx, group in enumerate(groups, 1):
         ids = [a.library_id for a in group]
         logger.info(f"[refresh] Group [{g_idx}/{len(groups)}]: {ids}")
 
         try:
-            results = await _process_group(group)
+            if use_graphql and gql_tokens is not None:
+                results = await _process_group_graphql(group, gql_tokens)
+            else:
+                results = await _process_group(group)
         except Exception as e:
             logger.error(f"[refresh] Group {g_idx} fatal: {e}")
             results = [(ad, None, None, None, True) for ad in group]

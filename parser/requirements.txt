@@ -10,6 +10,11 @@ playwright==1.49.1
 
 # HTTP
 httpx==0.28.1
+curl_cffi==0.7.4
+
+# Queue (Phase 2)
+redis==5.2.1
+rq==2.1.0
 
 # Image dedup
 Pillow==11.0.0
