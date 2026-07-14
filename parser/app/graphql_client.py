@@ -92,11 +92,6 @@ def _dedup(seq: list[str]) -> list[str]:
     return out
 
 
-# TEMP: log snapshot structure once per process to confirm field names on live
-# data, then remove. See BUG task (parser-v2-scale).
-_snapshot_logged = False
-
-
 def map_graphql_card(node: dict) -> ParsedCard:
     card = ParsedCard()
     card.library_id = str(node.get("ad_archive_id") or node.get("id") or "")
@@ -117,14 +112,6 @@ def map_graphql_card(node: dict) -> ParsedCard:
     # Texts, media, links live inside snapshot.
     snap = node.get("snapshot") or {}
 
-    global _snapshot_logged
-    if not _snapshot_logged and snap:
-        logger.info(f"[graphql] snapshot keys (once): {sorted(snap.keys())}")
-        cards0 = (snap.get("cards") or [None])[0]
-        if isinstance(cards0, dict):
-            logger.info(f"[graphql] snapshot.cards[0] keys: {sorted(cards0.keys())}")
-        _snapshot_logged = True
-
     card.page_name = node.get("page_name") or snap.get("page_name") or snap.get("current_page_name")
     card.page_url = snap.get("page_profile_uri")
 
@@ -133,16 +120,6 @@ def map_graphql_card(node: dict) -> ParsedCard:
     card.caption = snap.get("caption")
     card.cta_text = snap.get("cta_text") or snap.get("cta_type")
     card.link_url = snap.get("link_url")
-
-    image_urls: list[str] = []
-    video_urls: list[str] = []
-    poster_urls: list[str] = []
-
-    for img in snap.get("images") or []:
-        image_urls.append(img.get("original_image_url") or img.get("resized_image_url") or img.get("url"))
-    for v in snap.get("videos") or []:
-        video_urls.append(v.get("video_hd_url") or v.get("video_sd_url"))
-        poster_urls.append(v.get("video_preview_image_url") or v.get("thumbnail_url"))
 
     # Carousel/DCO ads carry per-card media (and often the only texts) in cards[].
     cards = snap.get("cards") or []
@@ -153,10 +130,37 @@ def map_graphql_card(node: dict) -> ParsedCard:
         card.caption = card.caption or c0.get("caption")
         card.cta_text = card.cta_text or c0.get("cta_text")
         card.link_url = card.link_url or c0.get("link_url")
+
+    # Media lives in cards[] on live data (snapshot.images/videos come back empty
+    # even for ads that have media — even single image/video ads use cards[0]).
+    # Walk every card; prefer original/HD over resized/SD.
+    image_urls: list[str] = []
+    video_urls: list[str] = []
+    poster_urls: list[str] = []
     for c in cards:
-        image_urls.append(c.get("original_image_url") or c.get("resized_image_url"))
-        video_urls.append(c.get("video_hd_url") or c.get("video_sd_url"))
-        poster_urls.append(c.get("video_preview_image_url"))
+        img = c.get("original_image_url") or c.get("resized_image_url")
+        if img:
+            image_urls.append(img)
+        vid = c.get("video_hd_url") or c.get("video_sd_url")
+        if vid:
+            video_urls.append(vid)
+            poster = c.get("video_preview_image_url")
+            if poster:
+                poster_urls.append(poster)
+
+    # Fallback: some ad types may still populate snapshot.images/videos directly.
+    if not image_urls and not video_urls:
+        for img in snap.get("images") or []:
+            u = img.get("original_image_url") or img.get("resized_image_url") or img.get("url")
+            if u:
+                image_urls.append(u)
+        for v in snap.get("videos") or []:
+            vu = v.get("video_hd_url") or v.get("video_sd_url")
+            if vu:
+                video_urls.append(vu)
+            p = v.get("video_preview_image_url") or v.get("thumbnail_url")
+            if p:
+                poster_urls.append(p)
 
     card.image_urls = _dedup(image_urls)
     card.video_urls = _dedup(video_urls)
