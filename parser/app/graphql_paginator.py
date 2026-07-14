@@ -38,41 +38,66 @@ class RateLimited(Exception):
     """curl_cffi request returned FB's 1675004 rate-limit sentinel."""
 
 
-_RESOLVED_IMPERSONATE: str | None = None
+_IMPERSONATE_CANDIDATES: list[str] | None = None
+_IMPERSONATE_IDX = 0
 
 
-def _resolve_impersonate() -> str:
-    """Return a curl impersonate target the *installed* curl_cffi actually supports.
+def _impersonate_candidates() -> list[str]:
+    """Ordered impersonate targets: the configured one first, then a ladder of
+    older Chrome fingerprints as fallbacks.
 
-    settings.curl_impersonate (e.g. "chrome131") is invalid on older curl_cffi builds
-    (0.7.x tops out at chrome124), where it surfaces as `Failed to setopt 47 1, curl: (43)`
-    or ImpersonateError. Rather than crash, fall back to the newest available chromeNNN.
+    settings.curl_impersonate (default "chrome131") is unsupported on curl_cffi
+    0.7.x. This bites in two ways: (1) the target is missing from BrowserType, and
+    (2) the enum lists it but the bundled libcurl-impersonate binary doesn't
+    actually implement it. Case (2) only surfaces at request time as
+    `Failed to setopt 47 1, curl: (43)`, so the enum check alone can't prevent it —
+    _curl_fetch advances down this ladder when a POST hits that error.
     """
-    global _RESOLVED_IMPERSONATE
-    if _RESOLVED_IMPERSONATE is not None:
-        return _RESOLVED_IMPERSONATE
+    global _IMPERSONATE_CANDIDATES
+    if _IMPERSONATE_CANDIDATES is not None:
+        return _IMPERSONATE_CANDIDATES
 
-    target = settings.curl_impersonate
+    ladder = [
+        settings.curl_impersonate,
+        "chrome124", "chrome120", "chrome116", "chrome110", "chrome107", "chrome99",
+    ]
     try:
         from curl_cffi.requests import BrowserType
         valid = {b.value for b in BrowserType}
     except Exception:
-        _RESOLVED_IMPERSONATE = target
-        return target
+        valid = None
 
-    if target in valid:
-        _RESOLVED_IMPERSONATE = target
-    else:
-        chromes = sorted(
-            (v for v in valid if v.startswith("chrome") and v[len("chrome"):].split("_")[0].isdigit()),
-            key=lambda v: int(v[len("chrome"):].split("_")[0]),
-        )
-        _RESOLVED_IMPERSONATE = chromes[-1] if chromes else target
-        logger.warning(
-            f"[curl] impersonate '{target}' not supported by installed curl_cffi "
-            f"— using '{_RESOLVED_IMPERSONATE}'"
-        )
-    return _RESOLVED_IMPERSONATE
+    out: list[str] = []
+    for t in ladder:
+        if t and t not in out and (valid is None or t in valid):
+            out.append(t)
+    _IMPERSONATE_CANDIDATES = out or [settings.curl_impersonate]
+    return _IMPERSONATE_CANDIDATES
+
+
+def _resolve_impersonate() -> str:
+    """Current best impersonate target (first candidate not yet ruled out)."""
+    cands = _impersonate_candidates()
+    return cands[min(_IMPERSONATE_IDX, len(cands) - 1)]
+
+
+def _advance_impersonate() -> bool:
+    """Rule out the current impersonate target; return True if another remains."""
+    global _IMPERSONATE_IDX
+    cands = _impersonate_candidates()
+    if _IMPERSONATE_IDX < len(cands) - 1:
+        _IMPERSONATE_IDX += 1
+        logger.warning(f"[curl] impersonate fallback → '{cands[_IMPERSONATE_IDX]}'")
+        return True
+    return False
+
+
+def _is_impersonate_setopt_error(exc: Exception) -> bool:
+    """curl_cffi surfaces an unsupported impersonate target as a setopt failure
+    (`Failed to setopt 47 1, curl: (43)` — CURLOPT_POST / BAD_FUNCTION_ARGUMENT —
+    or ImpersonateError)."""
+    s = str(exc).lower()
+    return "setopt" in s or "impersonate" in s or "(43)" in s
 
 
 def _build_variables(template: dict, cursor: str | None, session_id: str) -> dict:
@@ -105,15 +130,26 @@ async def _curl_fetch(
     kwargs = dict(
         data=body,
         headers=headers,
-        impersonate=_resolve_impersonate(),
         timeout=settings.curl_timeout,
     )
     if proxy_url:
         # curl_cffi accepts a requests-style proxies dict; keep http+https on the same URL
         # (gost gateway is http://, residential pool entries may be socks5h://).
         kwargs["proxies"] = {"http": proxy_url, "https": proxy_url}
-    resp = await session.post(_GRAPHQL_URL, **kwargs)
-    return resp.status_code, resp.text
+
+    # impersonate is set per-request (not on the session) so we can fall back to an
+    # older Chrome fingerprint if this curl_cffi build rejects the configured target
+    # with `Failed to setopt 47 1, curl: (43)`.
+    while True:
+        impersonate = _resolve_impersonate()
+        try:
+            resp = await session.post(_GRAPHQL_URL, impersonate=impersonate, **kwargs)
+            return resp.status_code, resp.text
+        except Exception as exc:
+            if _is_impersonate_setopt_error(exc) and _advance_impersonate():
+                logger.warning(f"[curl] impersonate '{impersonate}' rejected ({exc}) — retrying")
+                continue
+            raise
 
 
 def _collect_nodes(text: str, ad_nodes: list[dict], seen_ids: set[str]) -> tuple[int, str | None, bool]:
