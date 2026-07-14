@@ -46,55 +46,66 @@ def _parse_response_json(text: str) -> dict:
 
 
 def _extract_ads_and_cursor(data: dict) -> tuple[list[dict], str | None, bool]:
+    """Real FB Ad Library shape:
+        data.ad_library_main.search_results_connection
+            .edges[].node.collated_results[]   <- ad cards
+            .page_info { end_cursor, has_next_page }
+    Each collated_result is one ad card. We stamp `id` = ad_archive_id so the
+    existing dedup in the paginators (which reads node["id"]) keeps working.
+    """
     try:
         al_main = (data.get("data") or {}).get("ad_library_main") or {}
-        ad_cards = al_main.get("ad_cards") or {}
-        edges = ad_cards.get("edges") or []
-        nodes = [e.get("node", e) for e in edges]
-        pi = ad_cards.get("pageInfo") or ad_cards.get("page_info") or {}
-        cursor = pi.get("endCursor") or pi.get("end_cursor")
-        has_next = bool(pi.get("hasNextPage") or pi.get("has_next_page"))
+        src = al_main.get("search_results_connection") or {}
+        edges = src.get("edges") or []
+        nodes: list[dict] = []
+        for e in edges:
+            node = e.get("node") or {}
+            for cr in node.get("collated_results") or []:
+                if cr:
+                    cr.setdefault("id", cr.get("ad_archive_id"))
+                    nodes.append(cr)
+        pi = src.get("page_info") or {}
+        cursor = pi.get("end_cursor")
+        has_next = bool(pi.get("has_next_page"))
         return nodes, cursor, has_next
     except Exception as exc:
         logger.warning(f"[graphql] response parse error: {exc}")
         return [], None, False
 
 
+def _text(v) -> str | None:
+    """snapshot text fields are sometimes {'text': ...}, sometimes plain str."""
+    if isinstance(v, dict):
+        v = v.get("text")
+    if isinstance(v, str):
+        return v or None
+    return None
+
+
+def _dedup(seq: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in seq:
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+# TEMP: log snapshot structure once per process to confirm field names on live
+# data, then remove. See BUG task (parser-v2-scale).
+_snapshot_logged = False
+
+
 def map_graphql_card(node: dict) -> ParsedCard:
     card = ParsedCard()
-    card.library_id = str(node.get("id") or "")
-    card.page_name = node.get("page_name")
-    card.page_url = node.get("page_profile_uri")
+    card.library_id = str(node.get("ad_archive_id") or node.get("id") or "")
+    card.is_active = bool(node.get("is_active"))
+    card.platforms = list(node.get("publisher_platform") or node.get("publisher_platforms") or [])
 
-    bodies = node.get("ad_creative_bodies") or []
-    card.body_text = bodies[0] if bodies else None
-
-    titles = node.get("ad_creative_link_titles") or []
-    card.title = titles[0] if titles else None
-
-    captions = node.get("ad_creative_link_captions") or []
-    card.caption = captions[0] if captions else None
-
-    snap = node.get("snapshot") or {}
-
-    videos = snap.get("videos") or []
-    card.video_urls = [
-        v.get("video_hd_url") or v.get("video_sd_url")
-        for v in videos
-        if v.get("video_hd_url") or v.get("video_sd_url")
-    ]
-    card.poster_urls = [
-        v.get("video_preview_image_url") or v.get("thumbnail_url")
-        for v in videos
-        if v.get("video_preview_image_url") or v.get("thumbnail_url")
-    ]
-
-    images = snap.get("images") or []
-    card.image_urls = [
-        img.get("original_image_url") or img.get("url")
-        for img in images
-        if img.get("original_image_url") or img.get("url")
-    ]
+    coll = node.get("collation_count")
+    if isinstance(coll, int) and coll > 0:
+        card.used_in_ads_count = coll
 
     start_ts = node.get("start_date")
     if isinstance(start_ts, (int, float)):
@@ -103,9 +114,53 @@ def map_graphql_card(node: dict) -> ParsedCard:
         except Exception:
             pass
 
-    card.is_active = bool(node.get("is_active"))
-    card.cta_text = node.get("cta_type")
-    card.platforms = list(node.get("publisher_platforms") or [])
+    # Texts, media, links live inside snapshot.
+    snap = node.get("snapshot") or {}
+
+    global _snapshot_logged
+    if not _snapshot_logged and snap:
+        logger.info(f"[graphql] snapshot keys (once): {sorted(snap.keys())}")
+        cards0 = (snap.get("cards") or [None])[0]
+        if isinstance(cards0, dict):
+            logger.info(f"[graphql] snapshot.cards[0] keys: {sorted(cards0.keys())}")
+        _snapshot_logged = True
+
+    card.page_name = node.get("page_name") or snap.get("page_name") or snap.get("current_page_name")
+    card.page_url = snap.get("page_profile_uri")
+
+    card.body_text = _text(snap.get("body"))
+    card.title = snap.get("title")
+    card.caption = snap.get("caption")
+    card.cta_text = snap.get("cta_text") or snap.get("cta_type")
+    card.link_url = snap.get("link_url")
+
+    image_urls: list[str] = []
+    video_urls: list[str] = []
+    poster_urls: list[str] = []
+
+    for img in snap.get("images") or []:
+        image_urls.append(img.get("original_image_url") or img.get("resized_image_url") or img.get("url"))
+    for v in snap.get("videos") or []:
+        video_urls.append(v.get("video_hd_url") or v.get("video_sd_url"))
+        poster_urls.append(v.get("video_preview_image_url") or v.get("thumbnail_url"))
+
+    # Carousel/DCO ads carry per-card media (and often the only texts) in cards[].
+    cards = snap.get("cards") or []
+    if cards:
+        c0 = cards[0]
+        card.body_text = card.body_text or _text(c0.get("body"))
+        card.title = card.title or c0.get("title")
+        card.caption = card.caption or c0.get("caption")
+        card.cta_text = card.cta_text or c0.get("cta_text")
+        card.link_url = card.link_url or c0.get("link_url")
+    for c in cards:
+        image_urls.append(c.get("original_image_url") or c.get("resized_image_url"))
+        video_urls.append(c.get("video_hd_url") or c.get("video_sd_url"))
+        poster_urls.append(c.get("video_preview_image_url"))
+
+    card.image_urls = _dedup(image_urls)
+    card.video_urls = _dedup(video_urls)
+    card.poster_urls = _dedup(poster_urls)
 
     return card
 

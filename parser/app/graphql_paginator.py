@@ -11,6 +11,7 @@ downstream map_graphql_card path are untouched.
 import asyncio
 import random
 import uuid
+from urllib.parse import urlencode
 
 from loguru import logger
 
@@ -37,6 +38,43 @@ class RateLimited(Exception):
     """curl_cffi request returned FB's 1675004 rate-limit sentinel."""
 
 
+_RESOLVED_IMPERSONATE: str | None = None
+
+
+def _resolve_impersonate() -> str:
+    """Return a curl impersonate target the *installed* curl_cffi actually supports.
+
+    settings.curl_impersonate (e.g. "chrome131") is invalid on older curl_cffi builds
+    (0.7.x tops out at chrome124), where it surfaces as `Failed to setopt 47 1, curl: (43)`
+    or ImpersonateError. Rather than crash, fall back to the newest available chromeNNN.
+    """
+    global _RESOLVED_IMPERSONATE
+    if _RESOLVED_IMPERSONATE is not None:
+        return _RESOLVED_IMPERSONATE
+
+    target = settings.curl_impersonate
+    try:
+        from curl_cffi.requests import BrowserType
+        valid = {b.value for b in BrowserType}
+    except Exception:
+        _RESOLVED_IMPERSONATE = target
+        return target
+
+    if target in valid:
+        _RESOLVED_IMPERSONATE = target
+    else:
+        chromes = sorted(
+            (v for v in valid if v.startswith("chrome") and v[len("chrome"):].split("_")[0].isdigit()),
+            key=lambda v: int(v[len("chrome"):].split("_")[0]),
+        )
+        _RESOLVED_IMPERSONATE = chromes[-1] if chromes else target
+        logger.warning(
+            f"[curl] impersonate '{target}' not supported by installed curl_cffi "
+            f"— using '{_RESOLVED_IMPERSONATE}'"
+        )
+    return _RESOLVED_IMPERSONATE
+
+
 def _build_variables(template: dict, cursor: str | None, session_id: str) -> dict:
     # Reuse the exact variables FB sent (country, adType, sortData, first, v, ...),
     # only overriding the pagination cursor and a stable session id.
@@ -61,15 +99,20 @@ async def _curl_fetch(
     headers = _curl_headers(tokens.lsd)
     if tokens.cookies:
         headers["cookie"] = tokens.cookies
-    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
-    resp = await session.post(
-        _GRAPHQL_URL,
-        data=form_data,
+    # Pre-encode the form as a string with an explicit content-type — matches the browser's
+    # AdLibrarySearchPaginationQuery POST exactly and avoids any dict-encoding edge cases.
+    body = urlencode(form_data)
+    kwargs = dict(
+        data=body,
         headers=headers,
-        impersonate=settings.curl_impersonate,
-        proxies=proxies,
+        impersonate=_resolve_impersonate(),
         timeout=settings.curl_timeout,
     )
+    if proxy_url:
+        # curl_cffi accepts a requests-style proxies dict; keep http+https on the same URL
+        # (gost gateway is http://, residential pool entries may be socks5h://).
+        kwargs["proxies"] = {"http": proxy_url, "https": proxy_url}
+    resp = await session.post(_GRAPHQL_URL, **kwargs)
     return resp.status_code, resp.text
 
 
@@ -169,19 +212,21 @@ async def _paginate_curl(
 
 async def _paginate_browser(
     url: str,
-    tokens: SessionTokens,
     ad_nodes: list[dict],
     seen_ids: set[str],
     start_cursor: str | None,
     max_ads: int,
     session_id: str,
 ) -> tuple[str | None, bool, int]:
-    """Fallback: paginate via in-page fetch() in a resource-blocked browser tab."""
+    """Fallback: paginate via in-page fetch() in a resource-blocked browser tab.
+
+    Tokens come from the fetch session's OWN page, so lsd/form-template match its cookies.
+    """
     cursor = start_cursor
     pages = 0
     rl_hits = 0
 
-    async with browser_fetch_session(url) as fetch:
+    async with browser_fetch_session(url) as (fetch, tokens):
         while len(ad_nodes) < max_ads:
             variables = _build_variables(tokens.variables_template, cursor, session_id)
             form_data = _build_form_data(tokens.as_tokens_dict(), variables)
@@ -237,10 +282,12 @@ async def paginate(url: str, max_ads: int = 2000, start_cursor: str | None = Non
     cursor = start_cursor
     total_pages = 0
     tokens: SessionTokens | None = None
+    use_curl = mode in ("curl", "auto") and _CURL_AVAILABLE
 
     while len(ad_nodes) < max_ads:
-        # (Re)capture tokens: first pass, or every session_refresh_every pages.
-        if tokens is None or (total_pages and total_pages % settings.session_refresh_every == 0):
+        # Curl needs tokens up front; browser-only mode captures its own in-session.
+        # (Re)capture on first pass and every session_refresh_every pages.
+        if use_curl and (tokens is None or (total_pages and total_pages % settings.session_refresh_every == 0)):
             tokens = await capture_session_tokens(url)
             logger.info(f"[paginate] session tokens ready (pages so far={total_pages})")
 
@@ -248,8 +295,6 @@ async def paginate(url: str, max_ads: int = 2000, start_cursor: str | None = Non
         remaining_to_refresh = settings.session_refresh_every - (total_pages % settings.session_refresh_every)
         chunk_cap = len(ad_nodes) + max(1, remaining_to_refresh) * 40  # ~40 ads/page ceiling
         chunk_max = min(max_ads, chunk_cap)
-
-        use_curl = mode in ("curl", "auto") and _CURL_AVAILABLE
         done = False
         try:
             if use_curl:
@@ -257,16 +302,15 @@ async def paginate(url: str, max_ads: int = 2000, start_cursor: str | None = Non
                     url, tokens, ad_nodes, seen_ids, cursor, chunk_max, session_id
                 )
             else:
+                # Browser path captures its own in-session tokens.
                 cursor, done, pages = await _paginate_browser(
-                    url, tokens, ad_nodes, seen_ids, cursor, chunk_max, session_id
+                    url, ad_nodes, seen_ids, cursor, chunk_max, session_id
                 )
         except RateLimited as exc:
             if mode == "auto" and use_curl:
                 logger.warning(f"[paginate] curl exhausted ({exc}) — switching to browser fallback")
-                # Fresh tokens for the browser session, resume from the same cursor.
-                tokens = await capture_session_tokens(url)
                 cursor, done, pages = await _paginate_browser(
-                    url, tokens, ad_nodes, seen_ids, cursor, chunk_max, session_id
+                    url, ad_nodes, seen_ids, cursor, chunk_max, session_id
                 )
             else:
                 logger.error(f"[paginate] rate limited with no fallback available: {exc}")
@@ -280,3 +324,29 @@ async def paginate(url: str, max_ads: int = 2000, start_cursor: str | None = Non
 
     logger.info(f"[paginate] done: {len(ad_nodes)} unique ads over {total_pages} pages (mode={mode})")
     return ad_nodes
+
+
+if __name__ == "__main__":
+    # Smoke test: PE / nutra / no keyword / total_impressions desc. Expect RAW > 0.
+    #   PAGINATION_MODE=curl    python -m app.graphql_paginator
+    #   PAGINATION_MODE=browser python -m app.graphql_paginator
+    import asyncio as _asyncio
+    from app.browser import build_library_url
+
+    async def _smoke():
+        url = build_library_url(
+            country="PE", keyword=None, languages=None,
+            active_status="all", media_type="all",
+            sort_mode="total_impressions", sort_direction="desc",
+        )
+        resolved = _resolve_impersonate() if _CURL_AVAILABLE else "n/a"
+        logger.info(f"[smoke] mode={settings.pagination_mode} curl_available={_CURL_AVAILABLE} impersonate={resolved}")
+        logger.info(f"[smoke] URL: {url}")
+        nodes = await paginate(url, max_ads=30)
+        logger.info(f"[smoke] RAW nodes collected: {len(nodes)}")
+        for n in nodes[:3]:
+            logger.info(f"  id={n.get('id')} active={n.get('is_active')} page={n.get('page_name')!r}")
+        if not nodes:
+            logger.error("[smoke] RAW=0 — pagination collected nothing")
+
+    _asyncio.run(_smoke())

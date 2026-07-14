@@ -432,14 +432,14 @@ async def _graphql_is_active(session, tokens, ad: Ad) -> bool | None:
         "x-asbd-id": "359341",
         "cookie": tokens.cookies,
     }
+    from app.graphql_paginator import _resolve_impersonate
     proxy_url = await get_proxy_url()
-    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+    kwargs = dict(data=form_data, headers=headers,
+                  impersonate=_resolve_impersonate(), timeout=settings.curl_timeout)
+    if proxy_url:
+        kwargs["proxies"] = {"http": proxy_url, "https": proxy_url}
     try:
-        resp = await session.post(
-            "https://www.facebook.com/api/graphql/",
-            data=form_data, headers=headers,
-            impersonate=settings.curl_impersonate, proxies=proxies, timeout=settings.curl_timeout,
-        )
+        resp = await session.post("https://www.facebook.com/api/graphql/", **kwargs)
         if "1675004" in resp.text or resp.status_code != 200:
             return None
         nodes, _, _ = _extract_ads_and_cursor(_parse_response_json(resp.text))

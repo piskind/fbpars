@@ -338,22 +338,35 @@ async def capture_session_tokens(url: str) -> SessionTokens:
 async def browser_fetch_session(url: str):
     """Fallback transport: a resource-blocked browser page kept open for in-page fetch().
 
-    Navigates to the FB Ad Library URL once (handling __rd_verify) so fetch() inherits the
-    browser's TLS fingerprint + cookies (curl_cffi sometimes trips 1675004). Yields an async
-    fetch(form_data, lsd) -> (status, text) callable. Used only when curl_cffi keeps failing.
+    Captures the pagination tokens FROM THIS SAME PAGE (so lsd/doc_id/form-template match the
+    page's own cookies — reusing tokens captured in a different browser makes FB return 0 ads),
+    then yields (fetch, tokens): an async fetch(form_data, lsd) -> (status, text) callable plus
+    the matching SessionTokens. Used when curl_cffi keeps failing.
     """
     async with browser_context(block_resources=True, semaphore=_TOKEN_SEMAPHORE) as context:
         page = await context.new_page()
-        loaded = await goto_with_challenge_retry(page, url)
-        if not loaded:
-            raise RuntimeError(f"[browser-fetch] page load failed: {url}")
+        captured = await _capture_pagination_context(page, url)
 
-        async def _fetch(form_data: dict, lsd: str | None) -> tuple[int, str]:
+        base = captured["base_form_data"]
+        try:
+            variables_template = json.loads(base.get("variables", "{}"))
+        except Exception:
+            variables_template = {}
+        tokens = SessionTokens(
+            cookies=captured.get("cookies", ""),
+            lsd=captured.get("lsd"),
+            doc_id=captured.get("doc_id"),
+            base_form_data=base,
+            variables_template=variables_template,
+            captured_at=time.time(),
+        )
+
+        async def _fetch(form_data: dict, lsd: str | None = None) -> tuple[int, str]:
             body = urlencode(form_data)
             headers = {
                 "content-type": "application/x-www-form-urlencoded",
                 "x-fb-friendly-name": "AdLibrarySearchPaginationQuery",
-                "x-fb-lsd": lsd or "",
+                "x-fb-lsd": (lsd if lsd is not None else tokens.lsd) or "",
                 "x-asbd-id": "359341",
             }
             result = await page.evaluate(
@@ -362,7 +375,7 @@ async def browser_fetch_session(url: str):
             )
             return result["status"], result["text"]
 
-        yield _fetch
+        yield _fetch, tokens
 
 
 class _RateLimited(Exception):
