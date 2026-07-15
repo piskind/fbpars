@@ -94,6 +94,15 @@ async def upsert_ad(
         if card.cta_text and not existing.cta_text:
             existing.cta_text = card.cta_text
 
+        # Refresh direct FB CDN media URLs on every re-parse — they carry short-lived
+        # signatures, so overwrite (rather than fill-if-empty) to keep them loadable.
+        if card.image_urls:
+            existing.image_urls = card.image_urls
+        if card.video_urls:
+            existing.video_urls = card.video_urls
+        if card.poster_urls:
+            existing.poster_urls = card.poster_urls
+
         if enriched["app_store"] and not existing.app_store:
             existing.app_store = enriched["app_store"]
         if enriched["ecom_platform"] and not existing.ecom_platform:
@@ -122,6 +131,9 @@ async def upsert_ad(
         link_url=card.link_url,
         display_url=card.display_url,
         media_type=_detect_media_type(card),
+        image_urls=card.image_urls or None,
+        video_urls=card.video_urls or None,
+        poster_urls=card.poster_urls or None,
         platforms=card.platforms or None,
         lead_form=card.lead_form,
         used_in_ads_count=card.used_in_ads_count,

@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # server has a transfer cap. A second pass / on-demand can fetch video later.
     skip_video_first_pass: bool = True
     media_workers: int = 2
+    # Master switch for downloading media into S3. Default OFF: we store the direct
+    # FB CDN URLs on the Ad and let the client's browser load/download them straight
+    # from fbcdn.net (saves server traffic + storage). Flip to True to restore the
+    # legacy S3 download/phash pipeline (Creative rows, media queue, media-worker).
+    enable_media_download: bool = False
 
     # ── Phase 5: refresh worker ─────────────────────────────────────────
     # "browser"  = open each ad's page (legacy; also does EU reach extraction).

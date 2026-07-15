@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { clientApi, downloadMedia, mediaFilename } from '../../api/client'
+import { clientApi, downloadMedia, mediaFilename, adMedia } from '../../api/client'
 import type { Ad } from '../../api/client'
 import { countryFlag } from '../../flags'
 import { Copy, Check, ThumbsUp, Camera, MessageCircle, Globe, Phone } from 'lucide-react'
@@ -192,31 +192,83 @@ export function AdDrawer({ adId, onClose }: Props) {
               </div>
             </div>
 
-            {/* Медиа */}
+            {/* Медиа — прямые ссылки на FB CDN (без прохода через наш бэкенд/S3) */}
             <div className="space-y-3">
-              {ad.creatives.map((c) => {
-                const url = mediaUrl(c.s3_url)
-                if (!url) return null
-                const isVideo = c.media_type?.toLowerCase() === 'video'
-                return (
-                  <div key={c.id} className="bg-gray-100 rounded-lg overflow-hidden">
-                    {isVideo ? (
-                      <video src={url} controls className="w-full" preload="metadata" />
-                    ) : (
-                      <img src={url} alt="" className="w-full" />
-                    )}
-                    <div className="p-2 text-right">
-                      <button
-                        type="button"
-                        onClick={() => downloadMedia(url, mediaFilename(ad.library_id, c.media_type, url))}
-                        className="text-blue-600 hover:underline text-xs"
-                      >
-                        ⬇ Скачать
-                      </button>
+              {(() => {
+                const vids = ad.video_urls ?? []
+                const imgs = ad.image_urls ?? []
+                const posters = ad.poster_urls ?? []
+                if (vids.length > 0 || imgs.length > 0) {
+                  return (
+                    <>
+                      {vids.map((v, i) => (
+                        <div key={`v${i}`} className="bg-gray-100 rounded-lg overflow-hidden">
+                          <video
+                            src={v}
+                            poster={posters[i] || undefined}
+                            controls
+                            className="w-full"
+                            preload="metadata"
+                          />
+                          <div className="p-2 text-right">
+                            <a
+                              href={v}
+                              download={mediaFilename(ad.library_id, 'video', v)}
+                              target="_blank"
+                              rel="noreferrer"
+                              referrerPolicy="no-referrer"
+                              className="text-blue-600 hover:underline text-xs"
+                            >
+                              ⬇ Скачать
+                            </a>
+                          </div>
+                        </div>
+                      ))}
+                      {imgs.map((im, i) => (
+                        <div key={`i${i}`} className="bg-gray-100 rounded-lg overflow-hidden">
+                          <img src={im} alt="" className="w-full" referrerPolicy="no-referrer" />
+                          <div className="p-2 text-right">
+                            <a
+                              href={im}
+                              download={mediaFilename(ad.library_id, 'image', im)}
+                              target="_blank"
+                              rel="noreferrer"
+                              referrerPolicy="no-referrer"
+                              className="text-blue-600 hover:underline text-xs"
+                            >
+                              ⬇ Скачать
+                            </a>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )
+                }
+                // Legacy S3 fallback for ads parsed before the direct-media migration.
+                return ad.creatives.map((c) => {
+                  const url = mediaUrl(c.s3_url)
+                  if (!url) return null
+                  const isVideo = c.media_type?.toLowerCase() === 'video'
+                  return (
+                    <div key={c.id} className="bg-gray-100 rounded-lg overflow-hidden">
+                      {isVideo ? (
+                        <video src={url} controls className="w-full" preload="metadata" />
+                      ) : (
+                        <img src={url} alt="" className="w-full" />
+                      )}
+                      <div className="p-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => downloadMedia(url, mediaFilename(ad.library_id, c.media_type, url))}
+                          className="text-blue-600 hover:underline text-xs"
+                        >
+                          ⬇ Скачать
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )
-              })}
+                  )
+                })
+              })()}
             </div>
 
             {/* HD на FB */}
@@ -532,9 +584,10 @@ export function AdDrawer({ adId, onClose }: Props) {
               ) : similar && similar.length > 0 ? (
                 <div className="grid grid-cols-3 gap-2">
                   {similar.map((s) => {
+                    const sm = adMedia(s)
                     const cre = s.creatives.find((c) => c.s3_url) || s.creatives[0]
-                    const url = cre ? mediaUrl(cre.s3_url) : null
-                    const isVideo = cre?.media_type?.toLowerCase() === 'video'
+                    const url = sm.url || (cre ? mediaUrl(cre.s3_url) : null)
+                    const isVideo = sm.url ? sm.isVideo : cre?.media_type?.toLowerCase() === 'video'
                     return (
                       <div
                         key={s.id}
@@ -544,10 +597,12 @@ export function AdDrawer({ adId, onClose }: Props) {
                           window.dispatchEvent(ev)
                         }}
                       >
-                        {url && isVideo ? (
+                        {sm.isVideo && sm.poster ? (
+                          <img src={sm.poster} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : url && isVideo ? (
                           <video src={url} className="w-full h-full object-cover" muted playsInline preload="metadata" />
                         ) : url ? (
-                          <img src={url} alt="" className="w-full h-full object-cover" />
+                          <img src={url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                         ) : null}
                       </div>
                     )

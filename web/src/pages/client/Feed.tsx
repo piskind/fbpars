@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useQuery, useInfiniteQuery } from '@tanstack/react-query'
-import { clientApi, downloadMedia, mediaFilename } from '../../api/client'
+import { clientApi, mediaFilename, adMedia } from '../../api/client'
 import type { Ad } from '../../api/client'
 import { AdDrawer } from '../../components/client/AdDrawer'
 import { DateRangePicker } from '../../components/client/DateRangePicker'
@@ -1094,9 +1094,13 @@ export function ClientFeedPage() {
 
         <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4">
           {ads.map((ad) => {
+            // Prefer direct FB CDN URLs; fall back to legacy S3 creatives for ads
+            // parsed before the direct-media migration.
+            const m = adMedia(ad)
             const cre = ad.creatives.find((c) => c.s3_url) || ad.creatives[0]
-            const url = cre ? mediaUrl(cre.s3_url) : null
-            const isVideo = cre?.media_type?.toLowerCase() === 'video'
+            const url = m.url || (cre ? mediaUrl(cre.s3_url) : null)
+            const isVideo = m.url ? m.isVideo : cre?.media_type?.toLowerCase() === 'video'
+            const posterUrl = m.poster
             const isSelected = selectedId === ad.id
             const pageFbUrl = ad.page_url || adsLibraryUrl(ad.page_id)
             const days = Math.max(1, ad.days_active)
@@ -1115,7 +1119,16 @@ export function ClientFeedPage() {
                 }`}
               >
                 <div className="group relative w-full aspect-square bg-gray-100 flex items-center justify-center overflow-hidden">
-                  {url && isVideo ? (
+                  {url && isVideo && posterUrl ? (
+                    // Video thumbnail: use the poster image (lighter than loading the video).
+                    <img
+                      src={posterUrl}
+                      alt=""
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : url && isVideo ? (
                     <video
                       src={url}
                       className="w-full h-full object-cover"
@@ -1128,24 +1141,26 @@ export function ClientFeedPage() {
                       alt=""
                       className="w-full h-full object-cover"
                       loading="lazy"
+                      referrerPolicy="no-referrer"
                     />
                   ) : (
                     <div className="text-gray-300 text-sm">нет медиа</div>
                   )}
 
-                  {/* Кнопка скачивания (слева сверху, на hover) */}
+                  {/* Кнопка скачивания (слева сверху, на hover) — прямая ссылка на FB CDN */}
                   {url && (
-                    <button
-                      type="button"
+                    <a
+                      href={url}
+                      download={mediaFilename(ad.library_id, isVideo ? 'video' : 'image', url)}
+                      target="_blank"
+                      rel="noreferrer"
+                      referrerPolicy="no-referrer"
                       title="Скачать креатив"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        downloadMedia(url, mediaFilename(ad.library_id, cre?.media_type ?? null, url))
-                      }}
+                      onClick={(e) => e.stopPropagation()}
                       className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow hover:bg-blue-700"
                     >
                       <Download className="w-3.5 h-3.5" />
-                    </button>
+                    </a>
                   )}
 
                   {/* Видео: бейдж + плеер по центру */}

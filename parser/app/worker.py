@@ -137,9 +137,9 @@ def split_date_range(date_from: date, date_to: date, chunk_days: int = 1) -> lis
 
 
 _EMPTY_STATS = {
-    "raw": 0, "new": 0, "updated": 0, "media_ok": 0, "media_fail": 0, "errors": 0,
-    "skipped_duplicate": 0, "skipped_no_media": 0, "skipped_already_rejected": 0,
-    "skipped_phash_duplicate": 0, "removed_no_media": 0,
+    "raw": 0, "new": 0, "updated": 0, "urls_saved": 0, "media_ok": 0, "media_fail": 0,
+    "errors": 0, "skipped_duplicate": 0, "skipped_no_media": 0,
+    "skipped_already_rejected": 0, "skipped_phash_duplicate": 0, "removed_no_media": 0,
 }
 
 
@@ -186,7 +186,12 @@ async def _upsert_cards_and_collect_media(
             stats["updated"] += 1
 
         if is_new and not skipped:
-            media_tasks.append((ad.id, card))
+            # Direct FB CDN URLs are already persisted by upsert_ad — nothing to download.
+            if card.image_urls or card.video_urls:
+                stats["urls_saved"] += 1
+            # Legacy S3 download/phash pipeline runs only when explicitly re-enabled.
+            if settings.enable_media_download:
+                media_tasks.append((ad.id, card))
 
     return stats, media_tasks
 

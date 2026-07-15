@@ -119,6 +119,12 @@ class Ad(Base):
     media_type: Mapped[AdMediaType] = mapped_column(SAEnum(AdMediaType, name="ad_media_type"), default=AdMediaType.UNKNOWN)
     platforms: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
 
+    # Direct FB CDN media URLs (no S3 download). Served straight to the client so the
+    # browser loads/downloads from fbcdn.net — see ENABLE_MEDIA_DOWNLOAD.
+    image_urls: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    video_urls: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    poster_urls: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+
     lead_form: Mapped[bool] = mapped_column(Boolean, default=False)
     language: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
     app_store: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)

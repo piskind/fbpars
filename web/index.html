@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Load FB CDN media directly: fbcdn.net blocks embeds that send a referrer.
+         Covers <video>, which ignores the per-tag referrerPolicy attribute. -->
+    <meta name="referrer" content="no-referrer" />
     <title>web</title>
   </head>
   <body>

@@ -179,6 +179,10 @@ class AdOut(BaseModel):
     link_url: str | None
     display_url: str | None
     media_type: str
+    # Direct FB CDN media URLs (client loads/downloads straight from fbcdn.net).
+    image_urls: list[str] | None = None
+    video_urls: list[str] | None = None
+    poster_urls: list[str] | None = None
     platforms: list[str] | None = None
     lead_form: bool = False
     language: str | None = None

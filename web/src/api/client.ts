@@ -149,7 +149,25 @@ export type Ad = {
   eu_countries: string[] | null
   spend_estimate: number | null
   used_in_ads_count: number | null
+  // Direct FB CDN media URLs (no S3). Preferred over `creatives` on the client.
+  image_urls: string[] | null
+  video_urls: string[] | null
+  poster_urls: string[] | null
   creatives: Creative[]
+}
+
+// Primary media to render for an ad. Prefers direct FB CDN URLs (video > image);
+// `url` is loaded straight from fbcdn.net (needs referrerPolicy="no-referrer").
+export type AdMedia = { url: string | null; poster: string | null; isVideo: boolean }
+
+export function adMedia(ad: Ad): AdMedia {
+  if (ad.video_urls && ad.video_urls.length > 0) {
+    return { url: ad.video_urls[0], poster: ad.poster_urls?.[0] ?? null, isVideo: true }
+  }
+  if (ad.image_urls && ad.image_urls.length > 0) {
+    return { url: ad.image_urls[0], poster: null, isVideo: false }
+  }
+  return { url: null, poster: null, isVideo: false }
 }
 
 export type ModerationItem = {
