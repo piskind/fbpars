@@ -366,14 +366,26 @@ async def _scrape_single_period(
     period_tag: str = "",
     cursor_start: str | None = None,
 ) -> dict:
-    """Dispatch to GraphQL or Playwright path based on settings.use_graphql."""
+    """Dispatch to GraphQL or Playwright path based on settings.use_graphql.
+
+    When use_graphql is on, a GraphQL failure RAISES (the chunk job fails and RQ retries
+    with a fresh IP) instead of silently falling back to the DOM-scroll path — that
+    fallback is capped by max_scrolls + FB's DOM virtualisation and returns ~500 cards
+    where GraphQL returns thousands, so reporting it as a "success" hides a degraded run.
+    _scrape_single_period_playwright is kept intact and still used when use_graphql=False
+    (explicit Playwright mode).
+    """
     if settings.use_graphql:
         try:
             return await _scrape_single_period_graphql(url, config, uploader, period_tag, cursor_start)
         except Exception as exc:
-            logger.warning(
-                f"[#{config.id}]{period_tag} GraphQL path failed: {exc} — falling back to Playwright"
+            logger.error(
+                f"[#{config.id}]{period_tag} GraphQL path failed: {exc} — failing chunk "
+                f"(no silent DOM-scroll fallback); RQ will retry with a fresh IP"
             )
+            raise RuntimeError(
+                f"GraphQL scrape failed for config #{config.id}{period_tag}: {exc}"
+            ) from exc
     return await _scrape_single_period_playwright(url, config, uploader, period_tag)
 
 

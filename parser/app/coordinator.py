@@ -52,6 +52,7 @@ async def enqueue_run(run_id: int) -> list[str]:
     """Enqueue one deduped RQ 'parse' job per (config, date-chunk). Returns job ids."""
     from app.queue import parse_queue
     from app.tasks import parse_chunk
+    from rq import Retry
     from rq.job import Job
 
     async with AsyncSessionLocal() as session:
@@ -79,6 +80,9 @@ async def enqueue_run(run_id: int) -> list[str]:
                 job_timeout=settings.parse_job_timeout,
                 result_ttl=3600,
                 failure_ttl=86400,
+                # A GraphQL failure now fails the chunk (no silent DOM-scroll fallback).
+                # Retry with growing backoff; parse_chunk rotates IP before each retry.
+                retry=Retry(max=3, interval=[60, 180, 300]),
             )
             job_ids.append(jid)
 
