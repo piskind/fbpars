@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     pagination_delay_max: float = 3.5
     # curl_cffi per-request timeout (seconds)
     curl_timeout: int = 30
+    # Hard ceiling on ads collected per (config, date-chunk) pagination run. This is a
+    # safety cap against a broken/looping cursor — NOT a target. Set high enough that on
+    # a normal daily/weekly slice FB itself signals has_next=False before we hit it.
+    # (The old default of 2000 was cutting collection off before FB was done.)
+    max_ads_per_chunk: int = 70000
 
     # ── Phase 2: Redis + RQ task queue ──────────────────────────────────
     redis_url: str = "redis://spy_redis:6379/0"

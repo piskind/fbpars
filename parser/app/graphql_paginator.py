@@ -243,7 +243,10 @@ async def _paginate_curl(
                 random.uniform(settings.pagination_delay_min, settings.pagination_delay_max)
             )
 
-    return cursor, len(ad_nodes) >= max_ads, pages
+    # Loop exited on the chunk cap (chunk_max = this session-refresh window), NOT because
+    # FB is out of data. Report done=False so paginate() rolls into the next chunk; the
+    # real global stop (settings.max_ads_per_chunk) is owned by paginate()'s own while-loop.
+    return cursor, False, pages
 
 
 async def _paginate_browser(
@@ -295,10 +298,11 @@ async def _paginate_browser(
                 random.uniform(settings.pagination_delay_min, settings.pagination_delay_max)
             )
 
-    return cursor, len(ad_nodes) >= max_ads, pages
+    # See _paginate_curl: chunk-cap exit is not a natural end → done=False.
+    return cursor, False, pages
 
 
-async def paginate(url: str, max_ads: int = 2000, start_cursor: str | None = None) -> list[dict]:
+async def paginate(url: str, max_ads: int | None = None, start_cursor: str | None = None) -> list[dict]:
     """Capture tokens once, then paginate browser-less over the whole result set.
 
     Session tokens are refreshed every settings.session_refresh_every pages to avoid
@@ -306,7 +310,12 @@ async def paginate(url: str, max_ads: int = 2000, start_cursor: str | None = Non
       "curl"    → curl_cffi only
       "browser" → thin browser fetch only
       "auto"    → curl_cffi, fall back to browser on repeated rate limits (default)
+
+    max_ads is a safety ceiling (defaults to settings.max_ads_per_chunk); real
+    completion is FB signalling has_next=False.
     """
+    if max_ads is None:
+        max_ads = settings.max_ads_per_chunk
     mode = settings.pagination_mode
     if mode == "curl" and not _CURL_AVAILABLE:
         logger.warning("[paginate] curl_cffi not installed — falling back to browser mode")
@@ -320,6 +329,7 @@ async def paginate(url: str, max_ads: int = 2000, start_cursor: str | None = Non
     tokens: SessionTokens | None = None
     use_curl = mode in ("curl", "auto") and _CURL_AVAILABLE
 
+    natural_end = False
     while len(ad_nodes) < max_ads:
         # Curl needs tokens up front; browser-only mode captures its own in-session.
         # (Re)capture on first pass and every session_refresh_every pages.
@@ -354,11 +364,21 @@ async def paginate(url: str, max_ads: int = 2000, start_cursor: str | None = Non
 
         total_pages += pages
         if done or not cursor:
+            natural_end = True
             break
         # Force a fresh token session on the next loop iteration.
         tokens = None
 
-    logger.info(f"[paginate] done: {len(ad_nodes)} unique ads over {total_pages} pages (mode={mode})")
+    if natural_end:
+        logger.info(
+            f"[paginate] done: has_next=False, natural end ({len(ad_nodes)} ads) "
+            f"over {total_pages} pages (mode={mode})"
+        )
+    else:
+        logger.warning(
+            f"[paginate] stopped by max_ads cap ({max_ads}) — FB may have more data "
+            f"({len(ad_nodes)} ads over {total_pages} pages, mode={mode})"
+        )
     return ad_nodes
 
 

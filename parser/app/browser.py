@@ -466,12 +466,14 @@ async def _scrape_attempt(url: str, max_ads: int, max_scrolls: int) -> list[dict
 
 async def scrape_via_browser_graphql(
     url: str,
-    max_ads: int = 2000,
+    max_ads: int | None = None,
     max_scrolls: int = 80,
 ) -> list[dict]:
     """Intercept FB's GraphQL responses while scrolling. Fallback to scrape_via_page_fetch (still scrolls → RAM grows)."""
     from app.proxy import rotate_ip_verified
 
+    if max_ads is None:
+        max_ads = settings.max_ads_per_chunk
     for attempt in range(3):
         try:
             return await _scrape_attempt(url, max_ads, max_scrolls)
@@ -613,7 +615,7 @@ async def _page_fetch_attempt(url: str, max_ads: int) -> list[dict]:
 
 async def scrape_via_page_fetch(
     url: str,
-    max_ads: int = 2000,
+    max_ads: int | None = None,
 ) -> list[dict]:
     """
     Primary path: load once, paginate via in-page fetch() without scrolling.
@@ -621,6 +623,8 @@ async def scrape_via_page_fetch(
     """
     from app.proxy import rotate_ip_verified
 
+    if max_ads is None:
+        max_ads = settings.max_ads_per_chunk
     for attempt in range(3):
         try:
             return await _page_fetch_attempt(url, max_ads)
