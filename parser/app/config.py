@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # a normal daily/weekly slice FB itself signals has_next=False before we hit it.
     # (The old default of 2000 was cutting collection off before FB was done.)
     max_ads_per_chunk: int = 70000
+    # Commit scraped cards to the DB every N collected during pagination, instead of
+    # holding the whole run in memory and upserting once at the end. A multi-hour run
+    # that dies (zombie browser / OOM / killed work-horse) then keeps everything committed
+    # so far instead of losing all of it.
+    commit_batch_size: int = 200
 
     # ── Phase 2: Redis + RQ task queue ──────────────────────────────────
     redis_url: str = "redis://spy_redis:6379/0"

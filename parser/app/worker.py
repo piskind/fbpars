@@ -278,29 +278,42 @@ async def _scrape_single_period_graphql(
     """GraphQL path: browser-less pagination (Phase 1) with legacy browser paths as fallback."""
     stats = dict(_EMPTY_STATS)
 
+    async def _persist_batch(nodes: list[dict]) -> None:
+        """Map + upsert one batch as it's scraped, so committed cards survive a crash of
+        the rest of the run. upsert_ad commits per card (durable + error-isolated) and
+        already persists direct-media URLs; stats reflect what's actually in the DB."""
+        stats["raw"] += len(nodes)
+        cards = [map_graphql_card(node) for node in nodes]
+        phase1, media_tasks = await _upsert_cards_and_collect_media(cards, config, period_tag)
+        for k, v in phase1.items():
+            stats[k] = stats.get(k, 0) + v
+        phase2 = await _dispatch_media(media_tasks, config, uploader, period_tag)
+        for k, v in phase2.items():
+            stats[k] = stats.get(k, 0) + v
+        saved_now = phase1.get("new", 0) + phase1.get("updated", 0)
+        logger.info(
+            f"[#{config.id}]{period_tag} committed batch: +{saved_now} cards "
+            f"(total saved so far: new={stats['new']} updated={stats['updated']} raw={stats['raw']})"
+        )
+
     if settings.graphql_mode == "fetch":
         logger.info(
             f"[#{config.id}]{period_tag} starting browser-less pagination "
-            f"(mode={settings.pagination_mode})"
+            f"(mode={settings.pagination_mode}, commit_batch={settings.commit_batch_size})"
         )
-        raw_nodes = await paginate(url, start_cursor=cursor_start)
-    elif settings.graphql_mode == "page_fetch":
+        # Incremental: paginate() hands each commit_batch_size batch to _persist_batch and
+        # keeps only the current batch in memory — no all-or-nothing upsert at the end.
+        await paginate(url, start_cursor=cursor_start, on_batch=_persist_batch)
+        return stats
+
+    # Legacy browser paths (non-default modes) still collect-then-upsert in one shot.
+    if settings.graphql_mode == "page_fetch":
         logger.info(f"[#{config.id}]{period_tag} starting browser-GraphQL scrape (in-page fetch pagination)")
         raw_nodes = await scrape_via_page_fetch(url)
     else:
         logger.info(f"[#{config.id}]{period_tag} starting browser-GraphQL scrape (response interception)")
         raw_nodes = await scrape_via_browser_graphql(url)
-    stats["raw"] = len(raw_nodes)
-
-    cards = [map_graphql_card(node) for node in raw_nodes]
-    phase1, media_tasks = await _upsert_cards_and_collect_media(cards, config, period_tag)
-    for k, v in phase1.items():
-        stats[k] = stats.get(k, 0) + v
-
-    phase2 = await _dispatch_media(media_tasks, config, uploader, period_tag)
-    for k, v in phase2.items():
-        stats[k] = stats.get(k, 0) + v
-
+    await _persist_batch(raw_nodes)
     return stats
 
 

@@ -11,6 +11,7 @@ downstream map_graphql_card path are untouched.
 import asyncio
 import random
 import uuid
+from typing import Awaitable, Callable
 from urllib.parse import urlencode
 
 from loguru import logger
@@ -166,11 +167,53 @@ def _collect_nodes(text: str, ad_nodes: list[dict], seen_ids: set[str]) -> tuple
     return new_count, next_cursor, has_next
 
 
+# Awaited with each batch of freshly-collected nodes so the caller can persist them
+# incrementally — durability across a multi-hour pagination that may die mid-run.
+BatchCallback = Callable[[list[dict]], Awaitable[None]]
+
+
+class _BatchCollector:
+    """Dedups nodes across the whole run and flushes them to on_batch in fixed-size
+    batches, so a crash mid-pagination keeps everything committed so far instead of
+    losing hours of scraping held only in the work-horse's memory.
+
+    When on_batch is None, retains every node (legacy: caller reads .nodes at the end).
+    seen_ids persists for the whole run (cross-batch dedup); the node buffer is cleared
+    on every flush to keep memory flat.
+    """
+
+    def __init__(self, on_batch: BatchCallback | None, batch_size: int):
+        self.on_batch = on_batch
+        self.batch_size = max(1, batch_size)
+        self.seen_ids: set[str] = set()
+        self.total = 0  # unique nodes collected across the whole run
+        self._buffer: list[dict] = []  # collected since last flush
+        self._retained: list[dict] = []  # everything, only when on_batch is None
+
+    def add_response(self, text: str) -> tuple[int, str | None, bool]:
+        new_count, cursor, has_next = _collect_nodes(text, self._buffer, self.seen_ids)
+        self.total += new_count
+        return new_count, cursor, has_next
+
+    async def maybe_flush(self, *, force: bool = False) -> None:
+        if not self._buffer or (not force and len(self._buffer) < self.batch_size):
+            return
+        batch = self._buffer
+        self._buffer = []  # detach before awaiting so a failed batch can't be double-sent
+        if self.on_batch is not None:
+            await self.on_batch(batch)  # persist to DB + free the memory
+        else:
+            self._retained.extend(batch)
+
+    @property
+    def nodes(self) -> list[dict]:
+        return self._retained
+
+
 async def _paginate_curl(
     url: str,
     tokens: SessionTokens,
-    ad_nodes: list[dict],
-    seen_ids: set[str],
+    collector: "_BatchCollector",
     start_cursor: str | None,
     max_ads: int,
     session_id: str,
@@ -185,7 +228,7 @@ async def _paginate_curl(
     consecutive_rl = 0
 
     async with _CurlAsyncSession() as session:
-        while len(ad_nodes) < max_ads:
+        while collector.total < max_ads:
             await proxy_mod.rotate_before_request()
             proxy_url = await proxy_mod.get_proxy_url()
             variables = _build_variables(tokens.variables_template, cursor, session_id)
@@ -223,20 +266,21 @@ async def _paginate_curl(
             consecutive_rl = 0
             pages += 1
             try:
-                new_count, next_cursor, has_next = _collect_nodes(text, ad_nodes, seen_ids)
+                new_count, next_cursor, has_next = collector.add_response(text)
             except Exception as exc:
                 raise RuntimeError(f"[curl] page={pages} parse error: {exc}\n{text[:300]}")
 
             logger.info(
-                f"[curl] page={pages} new={new_count} total={len(ad_nodes)} has_next={has_next}"
+                f"[curl] page={pages} new={new_count} total={collector.total} has_next={has_next}"
             )
+            await collector.maybe_flush()  # commit each commit_batch_size cards as we go
 
             if not next_cursor:
                 logger.info("[curl] no cursor — end of results")
                 return cursor, True, pages
             cursor = next_cursor
             if not has_next:
-                logger.info(f"[curl] pagination complete: {len(ad_nodes)} ads")
+                logger.info(f"[curl] pagination complete: {collector.total} ads")
                 return cursor, True, pages
 
             await asyncio.sleep(
@@ -251,8 +295,7 @@ async def _paginate_curl(
 
 async def _paginate_browser(
     url: str,
-    ad_nodes: list[dict],
-    seen_ids: set[str],
+    collector: "_BatchCollector",
     start_cursor: str | None,
     max_ads: int,
     session_id: str,
@@ -266,7 +309,7 @@ async def _paginate_browser(
     rl_hits = 0
 
     async with browser_fetch_session(url) as (fetch, tokens):
-        while len(ad_nodes) < max_ads:
+        while collector.total < max_ads:
             variables = _build_variables(tokens.variables_template, cursor, session_id)
             form_data = _build_form_data(tokens.as_tokens_dict(), variables)
             status, text = await fetch(form_data, tokens.lsd)
@@ -283,10 +326,11 @@ async def _paginate_browser(
                 raise RuntimeError(f"[browser-fetch] page={pages + 1} HTTP {status}: {text[:200]}")
 
             pages += 1
-            new_count, next_cursor, has_next = _collect_nodes(text, ad_nodes, seen_ids)
+            new_count, next_cursor, has_next = collector.add_response(text)
             logger.info(
-                f"[browser-fetch] page={pages} new={new_count} total={len(ad_nodes)} has_next={has_next}"
+                f"[browser-fetch] page={pages} new={new_count} total={collector.total} has_next={has_next}"
             )
+            await collector.maybe_flush()  # commit each commit_batch_size cards as we go
 
             if not next_cursor:
                 return cursor, True, pages
@@ -302,7 +346,12 @@ async def _paginate_browser(
     return cursor, False, pages
 
 
-async def paginate(url: str, max_ads: int | None = None, start_cursor: str | None = None) -> list[dict]:
+async def paginate(
+    url: str,
+    max_ads: int | None = None,
+    start_cursor: str | None = None,
+    on_batch: BatchCallback | None = None,
+) -> list[dict]:
     """Capture tokens once, then paginate browser-less over the whole result set.
 
     Session tokens are refreshed every settings.session_refresh_every pages to avoid
@@ -313,6 +362,12 @@ async def paginate(url: str, max_ads: int | None = None, start_cursor: str | Non
 
     max_ads is a safety ceiling (defaults to settings.max_ads_per_chunk); real
     completion is FB signalling has_next=False.
+
+    on_batch (optional): awaited with each batch of settings.commit_batch_size collected
+    nodes so the caller can persist them as we go. With it set, only the current batch is
+    held in memory and a crash keeps every already-committed batch — the return value is
+    then empty (nodes were handed off via on_batch). Without it, all nodes are retained
+    and returned (legacy).
     """
     if max_ads is None:
         max_ads = settings.max_ads_per_chunk
@@ -321,8 +376,7 @@ async def paginate(url: str, max_ads: int | None = None, start_cursor: str | Non
         logger.warning("[paginate] curl_cffi not installed — falling back to browser mode")
         mode = "browser"
 
-    ad_nodes: list[dict] = []
-    seen_ids: set[str] = set()
+    collector = _BatchCollector(on_batch, settings.commit_batch_size)
     session_id = str(uuid.uuid4())
     cursor = start_cursor
     total_pages = 0
@@ -330,56 +384,72 @@ async def paginate(url: str, max_ads: int | None = None, start_cursor: str | Non
     use_curl = mode in ("curl", "auto") and _CURL_AVAILABLE
 
     natural_end = False
-    while len(ad_nodes) < max_ads:
-        # Curl needs tokens up front; browser-only mode captures its own in-session.
-        # (Re)capture on first pass and every session_refresh_every pages.
-        if use_curl and (tokens is None or (total_pages and total_pages % settings.session_refresh_every == 0)):
-            tokens = await capture_session_tokens(url)
-            logger.info(f"[paginate] session tokens ready (pages so far={total_pages})")
+    try:
+        while collector.total < max_ads:
+            # Curl needs tokens up front; browser-only mode captures its own in-session.
+            # (Re)capture on first pass and every session_refresh_every pages.
+            if use_curl and (tokens is None or (total_pages and total_pages % settings.session_refresh_every == 0)):
+                tokens = await capture_session_tokens(url)
+                logger.info(f"[paginate] session tokens ready (pages so far={total_pages})")
 
-        # Chunk pagination so session-refresh boundaries are respected without losing cursor.
-        remaining_to_refresh = settings.session_refresh_every - (total_pages % settings.session_refresh_every)
-        chunk_cap = len(ad_nodes) + max(1, remaining_to_refresh) * 40  # ~40 ads/page ceiling
-        chunk_max = min(max_ads, chunk_cap)
-        done = False
-        try:
-            if use_curl:
-                cursor, done, pages = await _paginate_curl(
-                    url, tokens, ad_nodes, seen_ids, cursor, chunk_max, session_id
-                )
-            else:
-                # Browser path captures its own in-session tokens.
-                cursor, done, pages = await _paginate_browser(
-                    url, ad_nodes, seen_ids, cursor, chunk_max, session_id
-                )
-        except RateLimited as exc:
-            if mode == "auto" and use_curl:
-                logger.warning(f"[paginate] curl exhausted ({exc}) — switching to browser fallback")
-                cursor, done, pages = await _paginate_browser(
-                    url, ad_nodes, seen_ids, cursor, chunk_max, session_id
-                )
-            else:
-                logger.error(f"[paginate] rate limited with no fallback available: {exc}")
-                raise
+            # Chunk pagination so session-refresh boundaries are respected without losing cursor.
+            remaining_to_refresh = settings.session_refresh_every - (total_pages % settings.session_refresh_every)
+            chunk_cap = collector.total + max(1, remaining_to_refresh) * 40  # ~40 ads/page ceiling
+            chunk_max = min(max_ads, chunk_cap)
+            done = False
+            try:
+                if use_curl:
+                    cursor, done, pages = await _paginate_curl(
+                        url, tokens, collector, cursor, chunk_max, session_id
+                    )
+                else:
+                    # Browser path captures its own in-session tokens.
+                    cursor, done, pages = await _paginate_browser(
+                        url, collector, cursor, chunk_max, session_id
+                    )
+            except RateLimited as exc:
+                if mode == "auto" and use_curl:
+                    logger.warning(f"[paginate] curl exhausted ({exc}) — switching to browser fallback")
+                    cursor, done, pages = await _paginate_browser(
+                        url, collector, cursor, chunk_max, session_id
+                    )
+                else:
+                    logger.error(f"[paginate] rate limited with no fallback available: {exc}")
+                    raise
 
-        total_pages += pages
-        if done or not cursor:
-            natural_end = True
-            break
-        # Force a fresh token session on the next loop iteration.
-        tokens = None
+            total_pages += pages
+            if done or not cursor:
+                natural_end = True
+                break
+            # Force a fresh token session on the next loop iteration.
+            tokens = None
+    except BaseException:
+        # Durability: commit whatever's buffered before the failure propagates, so a
+        # crash mid-run keeps the partial batch too (best-effort — never mask the error).
+        await _safe_final_flush(collector)
+        raise
+
+    # Normal completion: flush the tail batch; a failure here should fail the chunk.
+    await collector.maybe_flush(force=True)
 
     if natural_end:
         logger.info(
-            f"[paginate] done: has_next=False, natural end ({len(ad_nodes)} ads) "
+            f"[paginate] done: has_next=False, natural end ({collector.total} ads) "
             f"over {total_pages} pages (mode={mode})"
         )
     else:
         logger.warning(
             f"[paginate] stopped by max_ads cap ({max_ads}) — FB may have more data "
-            f"({len(ad_nodes)} ads over {total_pages} pages, mode={mode})"
+            f"({collector.total} ads over {total_pages} pages, mode={mode})"
         )
-    return ad_nodes
+    return collector.nodes
+
+
+async def _safe_final_flush(collector: "_BatchCollector") -> None:
+    try:
+        await collector.maybe_flush(force=True)
+    except Exception as exc:
+        logger.error(f"[paginate] durability flush failed (partial batch may be lost): {exc}")
 
 
 if __name__ == "__main__":
