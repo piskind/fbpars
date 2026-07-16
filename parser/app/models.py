@@ -231,6 +231,40 @@ class ParserRun(Base):
     log_tail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+# Sentinels so a chunk with an open date bound still has a NOT NULL primary key
+# (Postgres PK columns can't be NULL, and NULLs break ON CONFLICT upserts).
+CHUNK_DATE_MIN = date(1, 1, 1)
+CHUNK_DATE_MAX = date(9999, 12, 31)
+
+
+def chunk_key(date_from: "date | None", date_to: "date | None") -> tuple[date, date]:
+    """Map a (possibly open) chunk date range to its NOT NULL chunk_progress PK."""
+    return (date_from or CHUNK_DATE_MIN, date_to or CHUNK_DATE_MAX)
+
+
+class ChunkProgress(Base):
+    """Resumable pagination bookmark per (config, date-chunk).
+
+    Lets a date range be filled across several runs: the coordinator resumes a chunk from
+    last_cursor while has_next is true, and skips it once FB reports has_next=false.
+    Open date bounds are stored via CHUNK_DATE_MIN/MAX sentinels (see chunk_key).
+    """
+    __tablename__ = "chunk_progress"
+
+    config_id: Mapped[int] = mapped_column(
+        ForeignKey("parsing_configs.id", ondelete="CASCADE"), primary_key=True
+    )
+    date_from: Mapped[date] = mapped_column(Date, primary_key=True)
+    date_to: Mapped[date] = mapped_column(Date, primary_key=True)
+
+    last_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    collected_count: Mapped[int] = mapped_column(Integer, default=0)
+    has_next: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Proxy(Base):
     __tablename__ = "proxies"
 

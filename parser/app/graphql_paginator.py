@@ -167,9 +167,10 @@ def _collect_nodes(text: str, ad_nodes: list[dict], seen_ids: set[str]) -> tuple
     return new_count, next_cursor, has_next
 
 
-# Awaited with each batch of freshly-collected nodes so the caller can persist them
-# incrementally — durability across a multi-hour pagination that may die mid-run.
-BatchCallback = Callable[[list[dict]], Awaitable[None]]
+# Awaited with (batch of freshly-collected nodes, resume cursor, has_next) so the caller
+# can persist them incrementally AND bookmark the cursor atomically with the cards —
+# durability + resumability across a multi-hour pagination that may die mid-run.
+BatchCallback = Callable[[list[dict], "str | None", bool], Awaitable[None]]
 
 
 class _BatchCollector:
@@ -177,31 +178,40 @@ class _BatchCollector:
     batches, so a crash mid-pagination keeps everything committed so far instead of
     losing hours of scraping held only in the work-horse's memory.
 
-    When on_batch is None, retains every node (legacy: caller reads .nodes at the end).
-    seen_ids persists for the whole run (cross-batch dedup); the node buffer is cleared
-    on every flush to keep memory flat.
+    on_batch receives the current resume cursor + has_next so the caller can persist the
+    pagination bookmark in the same transaction as the cards (cursor never runs ahead of
+    saved data). When on_batch is None, retains every node (legacy: caller reads .nodes).
+    seen_ids persists for the whole run (cross-batch dedup, optionally pre-seeded from the
+    DB); the node buffer is cleared on every flush to keep memory flat.
     """
 
-    def __init__(self, on_batch: BatchCallback | None, batch_size: int):
+    def __init__(self, on_batch: BatchCallback | None, batch_size: int, seen_ids: set[str] | None = None):
         self.on_batch = on_batch
         self.batch_size = max(1, batch_size)
-        self.seen_ids: set[str] = set()
-        self.total = 0  # unique nodes collected across the whole run
+        self.seen_ids: set[str] = seen_ids if seen_ids is not None else set()
+        self.total = 0  # unique NEW nodes collected this run (excludes pre-seeded dedups)
+        self.cursor: str | None = None  # cursor to resume from (next unfetched page)
+        self.has_next = True
         self._buffer: list[dict] = []  # collected since last flush
         self._retained: list[dict] = []  # everything, only when on_batch is None
 
     def add_response(self, text: str) -> tuple[int, str | None, bool]:
         new_count, cursor, has_next = _collect_nodes(text, self._buffer, self.seen_ids)
         self.total += new_count
+        self.cursor = cursor
+        self.has_next = has_next
         return new_count, cursor, has_next
 
     async def maybe_flush(self, *, force: bool = False) -> None:
-        if not self._buffer or (not force and len(self._buffer) < self.batch_size):
+        # force=True always fires (even with an empty buffer) so the terminal cursor /
+        # has_next=false is bookmarked at the end of a chunk; otherwise flush only on a
+        # full batch.
+        if not force and len(self._buffer) < self.batch_size:
             return
         batch = self._buffer
         self._buffer = []  # detach before awaiting so a failed batch can't be double-sent
         if self.on_batch is not None:
-            await self.on_batch(batch)  # persist to DB + free the memory
+            await self.on_batch(batch, self.cursor, self.has_next)  # persist cards + cursor, free memory
         else:
             self._retained.extend(batch)
 
@@ -303,44 +313,59 @@ async def _paginate_browser(
     """Fallback: paginate via in-page fetch() in a resource-blocked browser tab.
 
     Tokens come from the fetch session's OWN page, so lsd/form-template match its cookies.
+    The Playwright context is recycled every settings.browser_recycle_pages pages
+    (continuing from the saved cursor) so RSS stays flat over long paginations instead of
+    climbing to 6+ GB when one page is held across hundreds of requests.
     """
     cursor = start_cursor
     pages = 0
     rl_hits = 0
+    recycle_every = max(1, settings.browser_recycle_pages)
 
-    async with browser_fetch_session(url) as (fetch, tokens):
-        while collector.total < max_ads:
-            variables = _build_variables(tokens.variables_template, cursor, session_id)
-            form_data = _build_form_data(tokens.as_tokens_dict(), variables)
-            status, text = await fetch(form_data, tokens.lsd)
+    while collector.total < max_ads:
+        # (Re)open a fresh browser context; continue from the cursor we've reached so far.
+        async with browser_fetch_session(url) as (fetch, tokens):
+            session_pages = 0
+            while collector.total < max_ads and session_pages < recycle_every:
+                variables = _build_variables(tokens.variables_template, cursor, session_id)
+                form_data = _build_form_data(tokens.as_tokens_dict(), variables)
+                status, text = await fetch(form_data, tokens.lsd)
 
-            if _RATE_LIMIT_CODE in text:
-                rl_hits += 1
-                if rl_hits > settings.pagination_curl_fallback_after:
-                    raise RateLimited(f"browser-fetch rate limited {rl_hits}x")
-                logger.warning(f"[browser-fetch] page={pages + 1} rate limit — pause {_RATE_LIMIT_PAUSE}s")
-                await asyncio.sleep(_RATE_LIMIT_PAUSE)
-                continue
+                if _RATE_LIMIT_CODE in text:
+                    rl_hits += 1
+                    if rl_hits > settings.pagination_curl_fallback_after:
+                        raise RateLimited(f"browser-fetch rate limited {rl_hits}x")
+                    logger.warning(f"[browser-fetch] page={pages + 1} rate limit — pause {_RATE_LIMIT_PAUSE}s")
+                    await asyncio.sleep(_RATE_LIMIT_PAUSE)
+                    continue
 
-            if status != 200:
-                raise RuntimeError(f"[browser-fetch] page={pages + 1} HTTP {status}: {text[:200]}")
+                if status != 200:
+                    raise RuntimeError(f"[browser-fetch] page={pages + 1} HTTP {status}: {text[:200]}")
 
-            pages += 1
-            new_count, next_cursor, has_next = collector.add_response(text)
-            logger.info(
-                f"[browser-fetch] page={pages} new={new_count} total={collector.total} has_next={has_next}"
-            )
-            await collector.maybe_flush()  # commit each commit_batch_size cards as we go
+                pages += 1
+                session_pages += 1
+                new_count, next_cursor, has_next = collector.add_response(text)
+                logger.info(
+                    f"[browser-fetch] page={pages} new={new_count} total={collector.total} has_next={has_next}"
+                )
+                await collector.maybe_flush()  # commit each commit_batch_size cards as we go
 
-            if not next_cursor:
-                return cursor, True, pages
-            cursor = next_cursor
-            if not has_next:
-                return cursor, True, pages
+                if not next_cursor:
+                    return cursor, True, pages
+                cursor = next_cursor
+                if not has_next:
+                    return cursor, True, pages
 
-            await asyncio.sleep(
-                random.uniform(settings.pagination_delay_min, settings.pagination_delay_max)
-            )
+                await asyncio.sleep(
+                    random.uniform(settings.pagination_delay_min, settings.pagination_delay_max)
+                )
+
+        if collector.total >= max_ads:
+            break
+        logger.info(
+            f"[browser-fetch] recycling browser context after {session_pages} pages "
+            f"(cursor kept, total={collector.total})"
+        )
 
     # See _paginate_curl: chunk-cap exit is not a natural end → done=False.
     return cursor, False, pages
@@ -351,6 +376,7 @@ async def paginate(
     max_ads: int | None = None,
     start_cursor: str | None = None,
     on_batch: BatchCallback | None = None,
+    seen_ids: set[str] | None = None,
 ) -> list[dict]:
     """Capture tokens once, then paginate browser-less over the whole result set.
 
@@ -376,7 +402,7 @@ async def paginate(
         logger.warning("[paginate] curl_cffi not installed — falling back to browser mode")
         mode = "browser"
 
-    collector = _BatchCollector(on_batch, settings.commit_batch_size)
+    collector = _BatchCollector(on_batch, settings.commit_batch_size, seen_ids=seen_ids)
     session_id = str(uuid.uuid4())
     cursor = start_cursor
     total_pages = 0

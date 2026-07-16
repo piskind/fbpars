@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     # that dies (zombie browser / OOM / killed work-horse) then keeps everything committed
     # so far instead of losing all of it.
     commit_batch_size: int = 200
+    # Recycle the browser-fetch Playwright context every N pages during pagination
+    # (continuing from the saved cursor), so RSS stays flat (~2 GB) instead of climbing
+    # to 6+ GB when a single page is held across hundreds of pagination requests.
+    browser_recycle_pages: int = 50
 
     # ── Phase 2: Redis + RQ task queue ──────────────────────────────────
     redis_url: str = "redis://spy_redis:6379/0"

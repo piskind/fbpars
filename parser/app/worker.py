@@ -1,10 +1,11 @@
 import asyncio
 from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import select, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.models import Ad, Creative
 from loguru import logger
 from app.db import AsyncSessionLocal
-from app.models import ParsingConfig, AdMediaType
+from app.models import ParsingConfig, AdMediaType, ChunkProgress, chunk_key
 from app.browser import (
     browser_context,
     build_library_url,
@@ -268,42 +269,139 @@ async def _dispatch_media(
 
 
 
+async def _preload_seen_ids(
+    country: str, date_from: date | None, date_to: date | None
+) -> set[str]:
+    """Library IDs already saved for this chunk's date range, so a resumed or drifted
+    cursor doesn't waste time re-processing cards already in the DB. Seeded into the
+    paginator's dedup set (node id == ad_archive_id == library_id)."""
+    stmt = select(Ad.library_id).where(func.upper(Ad.country) == country.upper())
+    if date_from is not None:
+        stmt = stmt.where(Ad.started_at >= date_from)
+    if date_to is not None:
+        # inclusive of date_to's whole day (handles single-day chunks where from == to)
+        stmt = stmt.where(Ad.started_at < date_to + timedelta(days=1))
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(stmt)).scalars().all()
+    return {r for r in rows if r}
+
+
+async def _upsert_chunk_progress(
+    session,
+    config_id: int,
+    date_from: date | None,
+    date_to: date | None,
+    cursor: str | None,
+    has_next: bool,
+    saved: int,
+) -> None:
+    """Bookmark pagination progress for this (config, date-chunk) in the SAME transaction
+    as the batch's cards, so the cursor never runs ahead of what's saved."""
+    df, dt = chunk_key(date_from, date_to)
+    stmt = pg_insert(ChunkProgress).values(
+        config_id=config_id, date_from=df, date_to=dt,
+        last_cursor=cursor, collected_count=saved, has_next=has_next,
+    ).on_conflict_do_update(
+        index_elements=["config_id", "date_from", "date_to"],
+        set_={
+            "last_cursor": cursor,
+            "collected_count": ChunkProgress.collected_count + saved,
+            "has_next": has_next,
+            "updated_at": func.now(),
+        },
+    )
+    await session.execute(stmt)
+
+
 async def _scrape_single_period_graphql(
     url: str,
     config: ParsingConfig,
     uploader: MediaUploader,
     period_tag: str = "",
     cursor_start: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    track_chunk: bool = False,
 ) -> dict:
     """GraphQL path: browser-less pagination (Phase 1) with legacy browser paths as fallback."""
     stats = dict(_EMPTY_STATS)
 
-    async def _persist_batch(nodes: list[dict]) -> None:
-        """Map + upsert one batch as it's scraped, so committed cards survive a crash of
-        the rest of the run. upsert_ad commits per card (durable + error-isolated) and
-        already persists direct-media URLs; stats reflect what's actually in the DB."""
-        stats["raw"] += len(nodes)
+    async def _persist_batch(nodes: list[dict], cursor: str | None, has_next: bool) -> None:
+        """Map + upsert one batch and bookmark the cursor in a single transaction, so
+        every committed batch survives a later crash and the cursor stays in lockstep with
+        saved cards. One begin_nested savepoint per card isolates a bad row from the batch;
+        upsert_ad already persists the direct-media URLs. Stats reflect what's in the DB."""
         cards = [map_graphql_card(node) for node in nodes]
-        phase1, media_tasks = await _upsert_cards_and_collect_media(cards, config, period_tag)
-        for k, v in phase1.items():
-            stats[k] = stats.get(k, 0) + v
+        media_tasks: list[tuple[int, object]] = []
+        saved = 0
+        batch_seen: set[str] = set()
+
+        async with AsyncSessionLocal() as session:
+            for card in cards:
+                if not card.library_id or card.library_id in batch_seen:
+                    if card.library_id:
+                        stats["skipped_duplicate"] += 1
+                    continue
+                batch_seen.add(card.library_id)
+                if not card.image_urls and not card.video_urls and not card.poster_urls:
+                    stats["skipped_no_media"] += 1
+                    continue
+                try:
+                    async with session.begin_nested():  # savepoint: one bad card can't sink the batch
+                        ad, is_new, skipped = await upsert_ad(
+                            session, card, config.country, config.keyword,
+                            config.vertical, config.config_type,
+                        )
+                except Exception as e:
+                    logger.warning(f"[#{config.id}]{period_tag} DB error for {card.library_id}: {e}")
+                    stats["errors"] += 1
+                    continue
+
+                if is_new:
+                    stats["new"] += 1
+                    saved += 1
+                elif skipped:
+                    stats["skipped_already_rejected"] += 1
+                else:
+                    stats["updated"] += 1
+                    saved += 1
+
+                if is_new and not skipped:
+                    if card.image_urls or card.video_urls:
+                        stats["urls_saved"] += 1
+                    if settings.enable_media_download:
+                        media_tasks.append((ad.id, card))
+
+            if track_chunk:
+                await _upsert_chunk_progress(
+                    session, config.id, date_from, date_to, cursor, has_next, saved
+                )
+            await session.commit()  # cards + cursor bookmark commit together
+
+        stats["raw"] += len(nodes)
         phase2 = await _dispatch_media(media_tasks, config, uploader, period_tag)
         for k, v in phase2.items():
             stats[k] = stats.get(k, 0) + v
-        saved_now = phase1.get("new", 0) + phase1.get("updated", 0)
         logger.info(
-            f"[#{config.id}]{period_tag} committed batch: +{saved_now} cards "
-            f"(total saved so far: new={stats['new']} updated={stats['updated']} raw={stats['raw']})"
+            f"[#{config.id}]{period_tag} committed batch: +{saved} cards "
+            f"(saved so far: new={stats['new']} updated={stats['updated']} raw={stats['raw']}) "
+            f"has_next={has_next}"
         )
 
     if settings.graphql_mode == "fetch":
         logger.info(
             f"[#{config.id}]{period_tag} starting browser-less pagination "
-            f"(mode={settings.pagination_mode}, commit_batch={settings.commit_batch_size})"
+            f"(mode={settings.pagination_mode}, commit_batch={settings.commit_batch_size}, "
+            f"resume_cursor={'yes' if cursor_start else 'no'})"
         )
-        # Incremental: paginate() hands each commit_batch_size batch to _persist_batch and
-        # keeps only the current batch in memory — no all-or-nothing upsert at the end.
-        await paginate(url, start_cursor=cursor_start, on_batch=_persist_batch)
+        seen_ids: set[str] | None = None
+        if track_chunk:
+            seen_ids = await _preload_seen_ids(config.country, date_from, date_to)
+            if seen_ids:
+                logger.info(f"[#{config.id}]{period_tag} preloaded {len(seen_ids)} saved ids into dedup")
+        # Incremental + resumable: paginate() hands each commit_batch_size batch to
+        # _persist_batch (cards + cursor bookmark), keeps only the current batch in memory.
+        await paginate(url, start_cursor=cursor_start, on_batch=_persist_batch, seen_ids=seen_ids)
         return stats
 
     # Legacy browser paths (non-default modes) still collect-then-upsert in one shot.
@@ -313,7 +411,7 @@ async def _scrape_single_period_graphql(
     else:
         logger.info(f"[#{config.id}]{period_tag} starting browser-GraphQL scrape (response interception)")
         raw_nodes = await scrape_via_browser_graphql(url)
-    await _persist_batch(raw_nodes)
+    await _persist_batch(raw_nodes, None, False)
     return stats
 
 
@@ -378,6 +476,9 @@ async def _scrape_single_period(
     uploader: MediaUploader,
     period_tag: str = "",
     cursor_start: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    track_chunk: bool = False,
 ) -> dict:
     """Dispatch to GraphQL or Playwright path based on settings.use_graphql.
 
@@ -390,7 +491,9 @@ async def _scrape_single_period(
     """
     if settings.use_graphql:
         try:
-            return await _scrape_single_period_graphql(url, config, uploader, period_tag, cursor_start)
+            return await _scrape_single_period_graphql(
+                url, config, uploader, period_tag, cursor_start, date_from, date_to, track_chunk
+            )
         except Exception as exc:
             logger.error(
                 f"[#{config.id}]{period_tag} GraphQL path failed: {exc} — failing chunk "
@@ -528,7 +631,10 @@ async def process_chunk(
     period_tag = f" [{date_from}..{date_to}]" if date_from or date_to else ""
     logger.info(f"[#{config_id}]{period_tag} chunk start → {url}")
 
-    stats = await _scrape_single_period(url, config, uploader, period_tag, cursor_start)
+    stats = await _scrape_single_period(
+        url, config, uploader, period_tag, cursor_start,
+        date_from=date_from, date_to=date_to, track_chunk=True,
+    )
 
     async with AsyncSessionLocal() as session:
         cfg = await session.get(ParsingConfig, config_id)
