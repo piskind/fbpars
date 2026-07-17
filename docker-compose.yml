@@ -183,7 +183,8 @@ services:
         condition: service_healthy
     volumes:
       - ./db:/db
-    command: ["/bin/sh", "-c", "python /db/migrations/add_sort_fields.py && python /db/migrations/add_is_targeted_country.py && python /db/migrations/add_direct_media_urls.py && python /db/migrations/add_chunk_progress.py && python /db/migrations/add_ad_library_country_unique.py"]
+    # country-unique before sort_fields: a stale/broken sort_fields must not block the critical schema fix
+    command: ["/bin/sh", "/db/migrations/run_all.sh"]
     restart: "no"
 
   api:
