@@ -1,3 +1,7 @@
+"""Idempotent: add sort_mode/sort_direction and composite unique on parsing_configs.
+
+Safe to re-run. Avoids ADD CONSTRAINT IF NOT EXISTS (invalid PG syntax).
+"""
 import asyncpg
 import asyncio
 import os
@@ -19,18 +23,20 @@ async def migrate():
             ALTER TABLE parsing_configs
             DROP CONSTRAINT IF EXISTS uq_keyword_country;
         """)
-        # NULLS NOT DISTINCT: NULL values treated as equal (PG 15+).
-        # Prevents duplicate (keyword=NULL, country, sort_mode, sort_direction) rows.
-        # PG has no ADD CONSTRAINT IF NOT EXISTS — use DO/EXCEPTION for idempotency.
-        await conn.execute("""
-            DO $$ BEGIN
+        # Catalog check — PG has no ADD CONSTRAINT IF NOT EXISTS.
+        # NULLS NOT DISTINCT needs PG 15+ (compose uses postgres:16).
+        exists = await conn.fetchval(
+            """
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'uq_keyword_country_sort'
+            """
+        )
+        if not exists:
+            await conn.execute("""
                 ALTER TABLE parsing_configs
                 ADD CONSTRAINT uq_keyword_country_sort
                 UNIQUE NULLS NOT DISTINCT (keyword, country, sort_mode, sort_direction);
-            EXCEPTION
-                WHEN duplicate_object THEN NULL;
-            END $$;
-        """)
+            """)
         print("Migration OK: sort_mode/sort_direction added, constraint updated")
     finally:
         await conn.close()
