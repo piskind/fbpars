@@ -100,7 +100,9 @@ class Ad(Base):
     __tablename__ = "ads"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    library_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # Not globally unique: one row per (library_id, country) — see uq_ad_library_country
+    # below. Mirrors parser/app/models.py.
+    library_id: Mapped[str] = mapped_column(String(64), index=True)
 
     country: Mapped[str] = mapped_column(String(8), index=True)
     keyword: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
@@ -149,6 +151,10 @@ class Ad(Base):
 
     creatives: Mapped[list["Creative"]] = relationship(back_populates="ad", cascade="all, delete-orphan")
     moderation: Mapped["ModerationEntry"] = relationship(back_populates="ad", uselist=False, cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("library_id", "country", name="uq_ad_library_country"),
+    )
 
 
 class Creative(Base):

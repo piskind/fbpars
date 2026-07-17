@@ -100,7 +100,11 @@ class Ad(Base):
     __tablename__ = "ads"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    library_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # NOT globally unique: FB runs the same archive_id across countries, and we store one
+    # row PER (library_id, country) so an ad shown in several countries is counted/served
+    # per country. Uniqueness is the composite constraint below; this stays indexed for
+    # the per-country dedup lookup.
+    library_id: Mapped[str] = mapped_column(String(64), index=True)
 
     country: Mapped[str] = mapped_column(String(8), index=True)
     keyword: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
@@ -153,6 +157,8 @@ class Ad(Base):
 
     __table_args__ = (
         Index("ix_ads_eu_countries_gin", "eu_countries", postgresql_using="gin"),
+        # One row per ad per country of collection (see library_id note above).
+        UniqueConstraint("library_id", "country", name="uq_ad_library_country"),
     )
 
 

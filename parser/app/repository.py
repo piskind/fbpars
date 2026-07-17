@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 from app.models import Ad, Creative, ModerationEntry, AdMediaType, ModerationStatus
@@ -7,8 +7,19 @@ from app.parsers.library_card import ParsedCard
 from app.enrich import enrich_ad_fields
 
 
-async def find_ad_by_library_id(session: AsyncSession, library_id: str) -> Ad | None:
-    stmt = select(Ad).where(Ad.library_id == library_id)
+async def find_ad_by_library_id_and_country(
+    session: AsyncSession, library_id: str, country: str
+) -> Ad | None:
+    """Dedup lookup scoped to the country of the current collection.
+
+    The same FB archive_id runs in several countries; we keep a separate row per country
+    so an ad collected under PE doesn't shadow the same ad collected under MX (which would
+    otherwise resolve to the PE row, inherit its APPROVED moderation, and be dropped as
+    skipped_already_rejected). Matches the (library_id, country) unique constraint.
+    """
+    stmt = select(Ad).where(
+        Ad.library_id == library_id, func.upper(Ad.country) == country.upper()
+    )
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -48,7 +59,7 @@ async def upsert_ad(
     enriched = await enrich_ad_fields(card.link_url, card.body_text)
     page_id = _extract_page_id(card.page_url)
 
-    existing = await find_ad_by_library_id(session, card.library_id)
+    existing = await find_ad_by_library_id_and_country(session, card.library_id, country)
     if existing:
         # Check moderation status — don't re-create moderation entry for
         # already reviewed ads, and skip expensive field updates for rejected ones.

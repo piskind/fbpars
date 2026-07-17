@@ -40,6 +40,7 @@ async def _upload_card_media(
     config_id: int,
     ad_id: int,
     card,
+    country: str | None = None,
 ) -> dict:
     s = {"media_ok": 0, "media_fail": 0, "removed_no_media": 0, "skipped_phash_duplicate": 0}
     all_reused = True
@@ -49,7 +50,7 @@ async def _upload_card_media(
 
     async with MEDIA_SEMAPHORE:
         for idx, img_url in enumerate(card.image_urls[:3]):
-            upload = await uploader.upload_image(card.library_id, img_url, idx)
+            upload = await uploader.upload_image(card.library_id, img_url, idx, country)
             if upload:
                 img_uploads.append(upload)
             else:
@@ -71,7 +72,7 @@ async def _upload_card_media(
         # Fall back to poster images when there are no images AND we didn't just save videos.
         if not card.image_urls and not vid_uploads:
             for idx, poster_url in enumerate(card.poster_urls[:2]):
-                upload = await uploader.upload_image(card.library_id, poster_url, idx)
+                upload = await uploader.upload_image(card.library_id, poster_url, idx, country)
                 if upload:
                     img_uploads.append(upload)
                 else:
@@ -207,7 +208,7 @@ async def _run_media_phase(
     stats = {}
     logger.info(f"[#{config.id}]{period_tag} starting parallel media for {len(media_tasks)} new ads")
     results = await asyncio.gather(
-        *[_upload_card_media(uploader, config.id, ad_id, card) for ad_id, card in media_tasks],
+        *[_upload_card_media(uploader, config.id, ad_id, card, config.country) for ad_id, card in media_tasks],
         return_exceptions=True,
     )
     for r in results:

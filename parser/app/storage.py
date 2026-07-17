@@ -77,7 +77,7 @@ class MediaUploader:
     def __init__(self):
         self.session = aioboto3.Session()
 
-    async def upload_image(self, library_id: str, url: str, idx: int) -> dict | None:
+    async def upload_image(self, library_id: str, url: str, idx: int, country: str | None = None) -> dict | None:
         data = await _download(url)
         if not data:
             return None
@@ -90,13 +90,19 @@ class MediaUploader:
             width, height = None, None
 
         if phash:
-            from sqlalchemy import select
+            from sqlalchemy import select, func
             from app.db import AsyncSessionLocal
-            from app.models import Creative
+            from app.models import Creative, Ad
+            # Scope phash reuse to the collection country: the same creative running in PE
+            # and MX are distinct per-country ads, so an MX copy must not reuse (and be
+            # marked a phash-duplicate of) the PE creative.
+            stmt = select(Creative).where(Creative.phash == phash, Creative.s3_key.is_not(None))
+            if country:
+                stmt = stmt.join(Ad, Creative.ad_id == Ad.id).where(
+                    func.upper(Ad.country) == country.upper()
+                )
             async with AsyncSessionLocal() as s:
-                existing = (await s.execute(
-                    select(Creative).where(Creative.phash == phash, Creative.s3_key.is_not(None)).limit(1)
-                )).scalar_one_or_none()
+                existing = (await s.execute(stmt.limit(1))).scalar_one_or_none()
             if existing:
                 logger.info(f"phash dedupe: reusing {existing.s3_key} for {library_id}/img_{idx}")
                 return {
