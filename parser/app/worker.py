@@ -372,11 +372,22 @@ async def _scrape_single_period_graphql(
                     if settings.enable_media_download:
                         media_tasks.append((ad.id, card))
 
-            if track_chunk:
-                await _upsert_chunk_progress(
-                    session, config.id, date_from, date_to, cursor, has_next, saved
-                )
-            await session.commit()  # cards + cursor bookmark commit together
+            await session.commit()  # cards land first — independent of the bookmark below
+
+        # Bookmark the cursor AFTER the cards are committed (so it can never point past
+        # saved data) and in its OWN transaction, so a chunk_progress failure — e.g. the
+        # table is missing because the deploy didn't run the migration — can't roll back
+        # the batch of ads we just saved. Worst case the bookmark lags and the next run
+        # re-collects a little (idempotent via upsert), which is the safe direction.
+        if track_chunk:
+            try:
+                async with AsyncSessionLocal() as session:
+                    await _upsert_chunk_progress(
+                        session, config.id, date_from, date_to, cursor, has_next, saved
+                    )
+                    await session.commit()
+            except Exception as e:
+                logger.warning(f"[#{config.id}]{period_tag} chunk_progress bookmark failed (cards saved): {e}")
 
         stats["raw"] += len(nodes)
         phase2 = await _dispatch_media(media_tasks, config, uploader, period_tag)
