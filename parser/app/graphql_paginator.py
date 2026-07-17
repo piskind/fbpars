@@ -47,12 +47,12 @@ def _impersonate_candidates() -> list[str]:
     """Ordered impersonate targets: the configured one first, then a ladder of
     older Chrome fingerprints as fallbacks.
 
-    settings.curl_impersonate (default "chrome131") is unsupported on curl_cffi
-    0.7.x. This bites in two ways: (1) the target is missing from BrowserType, and
-    (2) the enum lists it but the bundled libcurl-impersonate binary doesn't
-    actually implement it. Case (2) only surfaces at request time as
-    `Failed to setopt 47 1, curl: (43)`, so the enum check alone can't prevent it —
-    _curl_fetch advances down this ladder when a POST hits that error.
+    settings.curl_impersonate (default "chrome131") requires curl_cffi >= 0.8 — the
+    pinned 0.15.0 ships it natively. The ladder stays as a safety net: a target can be
+    missing from BrowserType (filtered below) or present in the enum yet not implemented
+    by the bundled libcurl-impersonate binary, which only surfaces at request time as
+    `Failed to setopt 47 1, curl: (43)`; _curl_fetch advances down this ladder when a POST
+    hits that error.
     """
     global _IMPERSONATE_CANDIDATES
     if _IMPERSONATE_CANDIDATES is not None:
@@ -492,7 +492,16 @@ if __name__ == "__main__":
             sort_mode="total_impressions", sort_direction="desc",
         )
         resolved = _resolve_impersonate() if _CURL_AVAILABLE else "n/a"
-        logger.info(f"[smoke] mode={settings.pagination_mode} curl_available={_CURL_AVAILABLE} impersonate={resolved}")
+        try:
+            import curl_cffi as _cc
+            _ver = _cc.__version__
+        except Exception:
+            _ver = "n/a"
+        logger.info(
+            f"[smoke] mode={settings.pagination_mode} curl_available={_CURL_AVAILABLE} "
+            f"curl_cffi={_ver} impersonate={resolved}"
+        )
+        logger.info("[smoke] run with PAGINATION_MODE=curl to assert the fast path (no browser fallback)")
         logger.info(f"[smoke] URL: {url}")
         nodes = await paginate(url, max_ads=30)
         logger.info(f"[smoke] RAW nodes collected: {len(nodes)}")

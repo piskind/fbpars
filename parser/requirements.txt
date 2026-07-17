@@ -10,7 +10,12 @@ playwright==1.49.1
 
 # HTTP
 httpx==0.28.1
-curl_cffi==0.7.4
+# 0.7.4 predates chrome131 (its bundled libcurl-impersonate maxes at chrome124), so the
+# configured impersonate target was unsupported and every request tripped
+# `Failed to setopt 47 1, curl: (43)` at handle construction → browser fallback on every
+# page. 0.15.0 ships chrome131 natively with a matching bundled binary; the async
+# post(impersonate=, data=, headers=, proxies=) API is unchanged.
+curl_cffi==0.15.0
 
 # Queue (Phase 2)
 redis==5.2.1
