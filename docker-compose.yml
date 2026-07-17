@@ -183,7 +183,7 @@ services:
         condition: service_healthy
     volumes:
       - ./db:/db
-    command: ["/bin/sh", "-c", "python /db/migrations/add_sort_fields.py && python /db/migrations/add_is_targeted_country.py && python /db/migrations/add_direct_media_urls.py && python /db/migrations/add_chunk_progress.py"]
+    command: ["/bin/sh", "-c", "python /db/migrations/add_sort_fields.py && python /db/migrations/add_is_targeted_country.py && python /db/migrations/add_direct_media_urls.py && python /db/migrations/add_chunk_progress.py && python /db/migrations/add_ad_library_country_unique.py"]
     restart: "no"
 
   api:
