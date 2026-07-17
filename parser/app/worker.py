@@ -244,7 +244,7 @@ async def _dispatch_media(
         conn = q.connection
         enqueued = 0
         for ad_id, card in media_tasks:
-            jid = f"media:{ad_id}"
+            jid = f"media_{ad_id}"  # colon-free RQ job id (see coordinator.enqueue_run note)
             if Job.exists(jid, connection=conn):
                 continue
             q.enqueue(

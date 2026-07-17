@@ -78,7 +78,10 @@ async def enqueue_run(run_id: int) -> list[str]:
                     resumed += 1
 
                 # Deterministic id → re-triggering a run doesn't duplicate in-flight chunks.
-                jid = f"chunk:{config.id}:{df}:{dt}:{run_id}"
+                # Colon-free so it can't collide with RQ's `rq:job:<id>` Redis key namespace
+                # (baked in here so no post-pull sed is needed — that sed also ate the colon
+                # in `track_chunk:` annotations and broke worker.py).
+                jid = f"chunk_{config.id}_{df}_{dt}_{run_id}"
                 if Job.exists(jid, connection=conn):
                     continue
                 q.enqueue(
