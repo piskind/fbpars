@@ -62,7 +62,7 @@ def parse_chunk(
     from app.worker import process_chunk
     _rotate_ip_on_retry()
     return asyncio.run(
-        process_chunk(config_id, _parse_date(date_from), _parse_date(date_to), cursor_start)
+        process_chunk(config_id, _parse_date(date_from), _parse_date(date_to), cursor_start, run_id)
     )
 
 

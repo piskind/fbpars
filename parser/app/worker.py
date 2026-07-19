@@ -270,18 +270,17 @@ async def _dispatch_media(
 
 
 
-async def _preload_seen_ids(
-    country: str, date_from: date | None, date_to: date | None
-) -> set[str]:
-    """Library IDs already saved for this chunk's date range, so a resumed or drifted
-    cursor doesn't waste time re-processing cards already in the DB. Seeded into the
-    paginator's dedup set (node id == ad_archive_id == library_id)."""
+async def _preload_seen_ids(country: str) -> set[str]:
+    """Library IDs already saved for this COUNTRY, seeded into the paginator's dedup set so a
+    resumed/drifted cursor doesn't re-process cards already in the DB.
+
+    Scope MUST match what upsert_ad actually dedups on — the (library_id, country) unique key,
+    with NO date filter. The old scope filtered by `Ad.started_at` inside the chunk's day, but
+    started_at comes from node["start_date"] which FB omits on most collated results, so it was
+    NULL for almost every row → the preload returned a couple of ids instead of thousands, the
+    paginator counted every already-saved card as "new", and every one landed as
+    skipped_already_reviewed (committed +0). Country-scoped preload is the correct, reliable set."""
     stmt = select(Ad.library_id).where(func.upper(Ad.country) == country.upper())
-    if date_from is not None:
-        stmt = stmt.where(Ad.started_at >= date_from)
-    if date_to is not None:
-        # inclusive of date_to's whole day (handles single-day chunks where from == to)
-        stmt = stmt.where(Ad.started_at < date_to + timedelta(days=1))
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(stmt)).scalars().all()
     return {r for r in rows if r}
@@ -327,25 +326,32 @@ async def _scrape_single_period_graphql(
     """GraphQL path: browser-less pagination (Phase 1) with legacy browser paths as fallback."""
     stats = dict(_EMPTY_STATS)
 
-    async def _persist_batch(nodes: list[dict], cursor: str | None, has_next: bool) -> None:
+    async def _persist_batch(nodes: list[dict], cursor: str | None, has_next: bool) -> int:
         """Map + upsert one batch and bookmark the cursor in a single transaction, so
         every committed batch survives a later crash and the cursor stays in lockstep with
         saved cards. One begin_nested savepoint per card isolates a bad row from the batch;
-        upsert_ad already persists the direct-media URLs. Stats reflect what's in the DB."""
+        upsert_ad already persists the direct-media URLs. Stats reflect what's in the DB.
+
+        Returns a progress count (new+updated+errors) so the paginator's stall guard keys off
+        real DB writes, not fetched-from-FB counts."""
         cards = [map_graphql_card(node) for node in nodes]
         media_tasks: list[tuple[int, object]] = []
         saved = 0
+        # Per-batch counters (the cumulative `stats` dict is updated from these after commit)
+        # so the committed-batch log can show exactly where this batch's cards went.
+        b = {"new": 0, "updated": 0, "skipped_already_reviewed": 0,
+             "skipped_no_media": 0, "skipped_duplicate": 0, "errors": 0}
         batch_seen: set[str] = set()
 
         async with AsyncSessionLocal() as session:
             for card in cards:
                 if not card.library_id or card.library_id in batch_seen:
                     if card.library_id:
-                        stats["skipped_duplicate"] += 1
+                        b["skipped_duplicate"] += 1
                     continue
                 batch_seen.add(card.library_id)
                 if not card.image_urls and not card.video_urls and not card.poster_urls:
-                    stats["skipped_no_media"] += 1
+                    b["skipped_no_media"] += 1
                     continue
                 try:
                     async with session.begin_nested():  # savepoint: one bad card can't sink the batch
@@ -355,16 +361,16 @@ async def _scrape_single_period_graphql(
                         )
                 except Exception as e:
                     logger.warning(f"[#{config.id}]{period_tag} DB error for {card.library_id}: {e}")
-                    stats["errors"] += 1
+                    b["errors"] += 1
                     continue
 
                 if is_new:
-                    stats["new"] += 1
+                    b["new"] += 1
                     saved += 1
                 elif skipped:
-                    stats["skipped_already_reviewed"] += 1
+                    b["skipped_already_reviewed"] += 1
                 else:
-                    stats["updated"] += 1
+                    b["updated"] += 1
                     saved += 1
 
                 if is_new and not skipped:
@@ -374,6 +380,9 @@ async def _scrape_single_period_graphql(
                         media_tasks.append((ad.id, card))
 
             await session.commit()  # cards land first — independent of the bookmark below
+
+        for k, v in b.items():  # fold this batch into the cumulative chunk stats
+            stats[k] = stats.get(k, 0) + v
 
         # Bookmark the cursor AFTER the cards are committed (so it can never point past
         # saved data) and in its OWN transaction, so a chunk_progress failure — e.g. the
@@ -400,11 +409,19 @@ async def _scrape_single_period_graphql(
             phase2 = {}
         for k, v in phase2.items():
             stats[k] = stats.get(k, 0) + v
+        # One-line per-batch breakdown so "+0 committed" is explainable at a glance: shows
+        # exactly where this batch's raw cards went (already-saved vs no-media vs error).
         logger.info(
-            f"[#{config.id}]{period_tag} committed batch: +{saved} cards "
-            f"(saved so far: new={stats['new']} updated={stats['updated']} raw={stats['raw']}) "
-            f"has_next={has_next}"
+            f"[#{config.id}]{period_tag} committed batch: +{saved} to DB "
+            f"[new={b['new']} upd={b['updated']} skip_reviewed={b['skipped_already_reviewed']} "
+            f"no_media={b['skipped_no_media']} dup={b['skipped_duplicate']} "
+            f"phash_dup={phase2.get('skipped_phash_duplicate', 0)} err={b['errors']}] "
+            f"raw_batch={len(nodes)} has_next={has_next} "
+            f"(chunk totals: new={stats['new']} upd={stats['updated']} raw={stats['raw']})"
         )
+        # Progress signal for the stall guard: DB writes this batch, plus errors so a batch
+        # that failed to write (broken chunk) isn't mistaken for an exhausted one and closed.
+        return saved + b["errors"]
 
     if settings.graphql_mode == "fetch":
         logger.info(
@@ -417,7 +434,7 @@ async def _scrape_single_period_graphql(
             # Preloading saved ids is a dedup OPTIMIZATION — a transient DB hiccup here must
             # not kill the chunk; worst case we re-process a few already-saved cards (idempotent).
             try:
-                seen_ids = await _preload_seen_ids(config.country, date_from, date_to)
+                seen_ids = await _preload_seen_ids(config.country)
             except Exception as e:
                 logger.warning(f"[#{config.id}]{period_tag} preload dedup ids failed (continuing): {e}")
                 seen_ids = None
@@ -637,17 +654,52 @@ def _build_url_for_config(config: ParsingConfig, date_from: date | None, date_to
     )
 
 
+async def _skip_zombie_chunk(
+    config_id: int, date_from: date | None, date_to: date | None, run_id: int | None
+) -> str | None:
+    """Return a reason string if this chunk job should NOT run, else None.
+
+    A worker restart kills the in-flight job → RQ marks it failed → Retry re-runs it later.
+    Without this guard the re-run re-collects a day that's already closed, or keeps working for
+    a run that was cancelled/finished. We check the live state right before doing any work:
+      * chunk_progress.has_next=False → the day is exhausted, nothing to collect.
+      * the owning ParserRun is cancelled/done/failed → stale job from an old/aborted run.
+    """
+    from app.models import ParserRun
+    async with AsyncSessionLocal() as session:
+        kdf, kdt = chunk_key(date_from, date_to)
+        prog = await session.get(ChunkProgress, (config_id, kdf, kdt))
+        if prog is not None and not prog.has_next:
+            return "chunk already exhausted (has_next=false)"
+        if run_id is not None:
+            run = await session.get(ParserRun, run_id)
+            if run is None:
+                return f"run #{run_id} no longer exists"
+            if run.status in ("cancelled", "done", "failed"):
+                return f"run #{run_id} is {run.status}"
+    return None
+
+
 async def process_chunk(
     config_id: int,
     date_from: date | None,
     date_to: date | None,
     cursor_start: str | None = None,
+    run_id: int | None = None,
 ) -> dict:
     """Process ONE (config, date-chunk) unit — the RQ job body (Phase 2).
 
     Self-contained: own DB session, own MediaUploader. Idempotent via upsert_ad, so a
     crashed chunk can be safely re-run without restarting the whole geo.
     """
+    # Zombie guard: a retried/orphaned job must not re-collect a closed day or work for a
+    # cancelled/finished run (used to require hand-cleaning the RQ registries).
+    skip_reason = await _skip_zombie_chunk(config_id, date_from, date_to, run_id)
+    if skip_reason:
+        period_tag = f" [{date_from}..{date_to}]" if date_from or date_to else ""
+        logger.info(f"[#{config_id}]{period_tag} skipping chunk job — {skip_reason}")
+        return {"skipped_zombie": 1}
+
     async with AsyncSessionLocal() as session:
         config = await session.get(ParsingConfig, config_id)
     if config is None:

@@ -194,7 +194,10 @@ def _collect_nodes(text: str, ad_nodes: list[dict], seen_ids: set[str]) -> tuple
 # Awaited with (batch of freshly-collected nodes, resume cursor, has_next) so the caller
 # can persist them incrementally AND bookmark the cursor atomically with the cards —
 # durability + resumability across a multi-hour pagination that may die mid-run.
-BatchCallback = Callable[[list[dict], "str | None", bool], Awaitable[None]]
+# Returns a "progress" count = rows actually written to the DB (new+updated) PLUS write
+# errors, so the stall guard can key off real DB writes instead of fetched-from-FB counts
+# (a chunk can fetch thousands of already-saved cards → 0 written → must still be caught).
+BatchCallback = Callable[[list[dict], "str | None", bool], Awaitable[int]]
 
 
 class _BatchCollector:
@@ -214,10 +217,14 @@ class _BatchCollector:
         self.batch_size = max(1, batch_size)
         self.seen_ids: set[str] = seen_ids if seen_ids is not None else set()
         self.total = 0  # unique NEW nodes collected this run (excludes pre-seeded dedups)
+        self.progress_total = 0  # sum of on_batch returns = DB writes (new+updated) + write errors
         self.cursor: str | None = None  # cursor to resume from (next unfetched page)
         self.has_next = True
         self._buffer: list[dict] = []  # collected since last flush
         self._retained: list[dict] = []  # everything, only when on_batch is None
+        self._stall_pages = 0       # pages since progress_total last advanced (stall guard)
+        self._last_progress = 0     # tracked on the collector so it survives session-refresh
+                                    # segment boundaries (a per-call local would reset and never trip)
 
     def add_response(self, text: str) -> tuple[int, str | None, bool]:
         new_count, cursor, has_next = _collect_nodes(text, self._buffer, self.seen_ids)
@@ -235,9 +242,26 @@ class _BatchCollector:
         batch = self._buffer
         self._buffer = []  # detach before awaiting so a failed batch can't be double-sent
         if self.on_batch is not None:
-            await self.on_batch(batch, self.cursor, self.has_next)  # persist cards + cursor, free memory
+            written = await self.on_batch(batch, self.cursor, self.has_next)  # persist cards + cursor
+            if isinstance(written, int):
+                self.progress_total += written  # drives the DB-write-based stall guard
         else:
             self._retained.extend(batch)
+
+    def note_page_and_check_stall(self, limit: int) -> bool:
+        """Call once per fetched page (after maybe_flush). Returns True when the chunk has gone
+        `limit` pages without a single DB write — the "FB replays already-saved cards forever"
+        stall. State lives on the collector so it survives session-refresh segment boundaries."""
+        if self.progress_total > self._last_progress:
+            self._last_progress = self.progress_total
+            self._stall_pages = 0
+        else:
+            self._stall_pages += 1
+        return self._stall_pages >= limit
+
+    @property
+    def stall_pages(self) -> int:
+        return self._stall_pages
 
     @property
     def nodes(self) -> list[dict]:
@@ -260,7 +284,6 @@ async def _paginate_curl(
     cursor = start_cursor
     pages = 0
     consecutive_rl = 0
-    no_new_streak = 0
 
     async with _CurlAsyncSession() as session:
         while collector.total < max_ads:
@@ -314,19 +337,18 @@ async def _paginate_curl(
             )
             await collector.maybe_flush()  # commit each commit_batch_size cards as we go
 
-            # Stall guard: FB sometimes keeps has_next=True while looping already-seen nodes.
-            # After enough zero-new pages the chunk is effectively exhausted — stop so it gets
-            # closed (has_next=False) instead of grinding for hours on collected data.
-            if new_count == 0:
-                no_new_streak += 1
-                if no_new_streak >= settings.pagination_stall_pages:
-                    logger.warning(
-                        f"[curl] stall guard: {no_new_streak} consecutive pages with 0 new ads "
-                        f"(total={collector.total}) — closing chunk as exhausted"
-                    )
-                    return cursor, True, pages
-            else:
-                no_new_streak = 0
+            # Stall guard keyed off DB WRITES, not fetched_new: the pathological case is FB
+            # replaying already-saved cards (fetched_new>0 every page) that all land as
+            # skipped_already_reviewed → 0 rows written for hundreds of pages. Counting fetched
+            # ads never tripped it. progress_total advances only when a committed batch actually
+            # wrote rows (or hit write errors, which reset it so a broken chunk isn't mistaken
+            # for an exhausted one). N pages with no DB progress → close the chunk.
+            if collector.note_page_and_check_stall(settings.pagination_stall_pages):
+                logger.warning(
+                    f"[curl] stall guard: {collector.stall_pages} pages with no DB writes "
+                    f"(fetched {collector.total} ads, all already-saved/skipped) — closing chunk"
+                )
+                return cursor, True, pages
 
             if not next_cursor:
                 logger.info("[curl] no cursor — end of results")
@@ -363,7 +385,6 @@ async def _paginate_browser(
     cursor = start_cursor
     pages = 0
     rl_hits = 0
-    no_new_streak = 0
     recycle_every = max(1, settings.browser_recycle_pages)
 
     while collector.total < max_ads:
@@ -396,18 +417,14 @@ async def _paginate_browser(
                 )
                 await collector.maybe_flush()  # commit each commit_batch_size cards as we go
 
-                # Stall guard (see _paginate_curl): close the chunk once FB stops yielding
-                # new ads while still claiming has_next=True.
-                if new_count == 0:
-                    no_new_streak += 1
-                    if no_new_streak >= settings.pagination_stall_pages:
-                        logger.warning(
-                            f"[browser-fetch] stall guard: {no_new_streak} consecutive pages with "
-                            f"0 new ads (total={collector.total}) — closing chunk as exhausted"
-                        )
-                        return cursor, True, pages
-                else:
-                    no_new_streak = 0
+                # Stall guard keyed off DB writes (see _paginate_curl): close once N pages pass
+                # with nothing written (already-saved cards replayed as skipped_already_reviewed).
+                if collector.note_page_and_check_stall(settings.pagination_stall_pages):
+                    logger.warning(
+                        f"[browser-fetch] stall guard: {collector.stall_pages} pages with no DB "
+                        f"writes (fetched {collector.total} ads, all already-saved/skipped) — closing chunk"
+                    )
+                    return cursor, True, pages
 
                 if not next_cursor:
                     return cursor, True, pages

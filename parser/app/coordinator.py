@@ -204,8 +204,12 @@ async def monitor_run(run_id: int, job_ids: list[str], poll_sec: int = 5) -> dic
     failed_reg = FailedJobRegistry(queue=q)
     started_reg = StartedJobRegistry(queue=q)
     total = {k: 0 for k in _STAT_KEYS}
+    # Chunk-outcome counters kept SEPARATE from card-level `errors`: a failed chunk is one
+    # unit, not one "error", so "7/21 done" can no longer secretly mean "7 died".
+    total["chunks_done"] = 0    # jobs that finished successfully
+    total["chunks_failed"] = 0  # jobs that failed terminally / vanished
     pending = set(job_ids)
-    last_report = -1
+    last_report = (-1, -1)      # (done, failed) — re-log when either moves
     progress_seen: dict = {}   # chunk key -> collected_count last logged (delta detection)
     started_seen: set = set()  # chunks we've already logged a first "collecting" line for
     polls = 0
@@ -255,9 +259,10 @@ async def monitor_run(run_id: int, job_ids: list[str], poll_sec: int = 5) -> dic
                 except Exception:
                     # Job data expired/gone — stop waiting, count it as a failed chunk.
                     logger.warning(f"[coordinator] job {jid} vanished — treating as failed")
-                    total["errors"] = total.get("errors", 0) + 1
+                    total["chunks_failed"] += 1
                     pending.discard(jid)
 
+            retrying = 0  # jobs waiting on a scheduled Retry (not yet terminal, not stuck)
             for jid, job in jobs.items():
                 if jid not in pending:
                     continue
@@ -265,9 +270,9 @@ async def monitor_run(run_id: int, job_ids: list[str], poll_sec: int = 5) -> dic
                 label = _chunk_label(kw.get("config_id"), kw.get("date_from"), kw.get("date_to"))
                 status = job.get_status(refresh=True)
                 if jid in failed_ids or status == "failed":
-                    total["errors"] = total.get("errors", 0) + 1
+                    total["chunks_failed"] += 1
                     tail = (job.exc_info or "")[-300:]
-                    logger.warning(f"[coordinator] chunk {label} failed: {tail}")
+                    logger.warning(f"[coordinator] chunk {label} FAILED: {tail}")
                     pending.discard(jid)
                     continue
                 if status in _TERMINAL:
@@ -277,17 +282,25 @@ async def monitor_run(run_id: int, job_ids: list[str], poll_sec: int = 5) -> dic
                         for k, v in r.items():
                             if isinstance(v, int):
                                 total[k] = total.get(k, 0) + v
-                        logger.info(
-                            f"[coordinator] chunk {label} done: raw={r.get('raw', 0)} "
-                            f"new={r.get('new', 0)} updated={r.get('updated', 0)} "
-                            f"skipped_reviewed={r.get('skipped_already_reviewed', 0)} "
-                            f"errors={r.get('errors', 0)}"
-                        )
-                        # Persist the per-chunk totals to the DB (survives log wipes).
-                        await _persist_chunk_result(
-                            run_id, kw.get("config_id"), kw.get("date_from"), kw.get("date_to"), r
-                        )
+                        total["chunks_done"] += 1
+                        if r.get("skipped_zombie"):
+                            # A no-op skip (exhausted day / stale run) — don't clobber the
+                            # chunk's real last_stats with a placeholder.
+                            logger.info(f"[coordinator] chunk {label} skipped (zombie/exhausted)")
+                        else:
+                            logger.info(
+                                f"[coordinator] chunk {label} done: raw={r.get('raw', 0)} "
+                                f"new={r.get('new', 0)} updated={r.get('updated', 0)} "
+                                f"skipped_reviewed={r.get('skipped_already_reviewed', 0)} "
+                                f"errors={r.get('errors', 0)}"
+                            )
+                            # Persist the per-chunk totals to the DB (survives log wipes).
+                            await _persist_chunk_result(
+                                run_id, kw.get("config_id"), kw.get("date_from"), kw.get("date_to"), r
+                            )
                     pending.discard(jid)
+                elif status in ("scheduled", "deferred"):
+                    retrying += 1  # a failed attempt is queued to retry with backoff
 
             # Surface live collection (committed batches, chunk starts) from chunk_progress.
             coords = []
@@ -306,16 +319,20 @@ async def monitor_run(run_id: int, job_ids: list[str], poll_sec: int = 5) -> dic
             # Persist the aggregate incrementally so cancel/crash/kill keeps the numbers.
             await _persist_run_stats(run_id, total)
 
-            done = len(job_ids) - len(pending)
-            if done != last_report:
-                logger.info(f"[coordinator] run #{run_id}: {done}/{len(job_ids)} chunks done")
-                last_report = done
+            done = total["chunks_done"]
+            failed = total["chunks_failed"]
+            if (done, failed) != last_report:
+                logger.info(
+                    f"[coordinator] run #{run_id}: {done} done, {failed} failed, "
+                    f"{retrying} retrying, {len(pending)} pending / {len(job_ids)} chunks"
+                )
+                last_report = (done, failed)
             elif polls % 12 == 0:
                 # Heartbeat (~once a minute at poll_sec=5) so the monitor is never silent for
                 # hours — makes a genuine stall visible instead of looking like a dead loop.
                 logger.info(
-                    f"[coordinator] run #{run_id}: monitoring {len(pending)} chunk(s) "
-                    f"(new={total['new']} updated={total['updated']} raw={total['raw']})"
+                    f"[coordinator] run #{run_id}: {done} done, {failed} failed, {retrying} retrying, "
+                    f"{len(pending)} pending (new={total['new']} updated={total['updated']} raw={total['raw']})"
                 )
         except Exception as exc:
             logger.warning(f"[coordinator] run #{run_id}: monitor poll error (continuing): {exc}")
