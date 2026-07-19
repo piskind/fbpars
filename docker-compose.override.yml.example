@@ -1,0 +1,28 @@
+# PROD-ONLY tuning template.
+#
+# Problem this solves (B2): memory limits / replica counts used to live in the tracked
+# docker-compose.yml, so every `git pull` reset them to repo defaults and the prod values
+# had to be re-applied by hand.
+#
+# Fix: copy this file to `docker-compose.override.yml` on the server (that name is gitignored,
+# so pull never touches it). Docker Compose auto-merges override on top of docker-compose.yml.
+#
+#     cp docker-compose.override.yml.example docker-compose.override.yml
+#     # edit values for the box, then:
+#     docker compose up -d
+#
+# The values below mirror the current prod tuning — adjust to taste, don't blindly lower them.
+services:
+  parser-worker:
+    deploy:
+      # Single exit channel today → run ONE worker (see README "Proxy & worker scaling").
+      # Raise replicas ONLY together with more proxy upstreams (PROXY_HTTP_GATEWAYS).
+      replicas: 1
+      resources:
+        limits:
+          # Chromium (token capture / browser-fetch fallback) can spike RSS well past the
+          # 700m repo default; prod runs 6144m.
+          memory: 6144m
+
+# NB: knobs like CHUNK_DAYS, MAX_ADS_PER_CHUNK, PARSER_WORKERS live in `.env` (also gitignored),
+# not here. See README "Prod tuning checklist".

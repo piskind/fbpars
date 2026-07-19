@@ -1,8 +1,26 @@
 import asyncio
+import hashlib
+import socket
 import time
 import httpx
 from loguru import logger
 from app.config import settings
+
+
+def worker_gateway() -> str:
+    """The upstream gost channel THIS worker should route through.
+
+    With several channels configured (settings.proxy_http_gateways) each worker binds to ONE,
+    chosen by a stable hash of its container hostname, so N workers spread across the exit-IPs
+    instead of all sharing one. With none configured, returns the single PROXY_HTTP_GATEWAY —
+    current behaviour, unchanged. Stable across restarts (hashlib, not the salted builtin hash)."""
+    gateways = settings.proxy_http_gateways
+    if not gateways:
+        return settings.proxy_http_gateway
+    if len(gateways) == 1:
+        return gateways[0]
+    digest = hashlib.md5(socket.gethostname().encode()).hexdigest()
+    return gateways[int(digest, 16) % len(gateways)]
 
 
 async def rotate_ip() -> bool:
@@ -11,6 +29,15 @@ async def rotate_ip() -> bool:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(settings.proxy_rotate_url)
+            # fxdx answers 429 when workers hammer the rotate endpoint together — the
+            # rotation does NOT happen, so back off instead of treating it as success.
+            if resp.status_code == 429:
+                logger.warning(
+                    f"IP rotation 429 (too many requests) — backing off "
+                    f"{settings.rotate_429_backoff_sec}s"
+                )
+                await asyncio.sleep(settings.rotate_429_backoff_sec)
+                return False
             resp.raise_for_status()
             logger.info(f"IP rotation triggered: {resp.text[:100]}")
         await asyncio.sleep(settings.proxy_rotate_wait_sec)
@@ -22,7 +49,7 @@ async def rotate_ip() -> bool:
 
 async def current_ip() -> str | None:
     try:
-        async with httpx.AsyncClient(proxy=settings.proxy_http_gateway, timeout=15) as client:
+        async with httpx.AsyncClient(proxy=worker_gateway(), timeout=15) as client:
             resp = await client.get("https://api.ipify.org")
             return resp.text.strip()
     except Exception as e:
@@ -47,6 +74,71 @@ async def rotate_ip_verified() -> bool:
 
     logger.info(f"rotate_ip_verified: IP changed {before} → {after}")
     return True
+
+
+# ─────────────────── rotation storm control (Redis lock) ───────────────────
+# One shared exit IP for all workers → rotating it must be serialised. Without this,
+# concurrent rate limits fan out into a burst of rotate calls that fxdx answers with 429,
+# so the IP never actually flips and the rate limit never clears (the "rotation storm").
+_ROTATE_LOCK_KEY = "parser:rotate:lock"
+_ROTATE_COOLDOWN_KEY = "parser:rotate:cooldown"
+
+
+def _rotate_redis():
+    """Shared Redis (same one RQ uses); None if unavailable so we degrade to plain rotation."""
+    try:
+        from app.queue import get_redis
+        return get_redis()
+    except Exception:
+        return None
+
+
+async def rotate_ip_guarded() -> bool:
+    """Rotate the single shared exit IP under a Redis lock + global cooldown.
+
+    Only one worker actually hits the rotate URL at a time; the others wait out the settle
+    pause and reuse the freshly-rotated shared IP instead of piling on (that pile-on is
+    what makes fxdx return 429). A global cooldown caps how often the IP flips. Falls back
+    to a plain verified rotation when Redis is unavailable (legacy behaviour)."""
+    r = _rotate_redis()
+    if r is None:
+        return await rotate_ip_verified()
+
+    # Someone rotated within the cooldown window → the shared IP already changed; settle & reuse.
+    try:
+        if r.exists(_ROTATE_COOLDOWN_KEY):
+            await asyncio.sleep(settings.rotate_settle_sec)
+            return True
+    except Exception:
+        pass
+
+    # Exclusivity: only the lock holder calls the rotate endpoint.
+    try:
+        got = bool(r.set(_ROTATE_LOCK_KEY, "1", nx=True, ex=settings.rotate_lock_ttl_sec))
+    except Exception:
+        got = False
+
+    if not got:
+        # Another worker is rotating the shared channel right now — wait for it, don't storm.
+        await asyncio.sleep(settings.rotate_settle_sec)
+        return True
+
+    try:
+        ok = await rotate_ip_verified()
+        if ok:
+            try:
+                r.set(_ROTATE_COOLDOWN_KEY, "1", ex=settings.rotate_cooldown_sec)
+            except Exception:
+                pass
+            # Let the new upstream IP come up before the next FB hit (avoids the 503 seen
+            # immediately after a change).
+            await asyncio.sleep(settings.rotate_settle_sec)
+        return ok
+    finally:
+        try:
+            r.delete(_ROTATE_LOCK_KEY)
+        except Exception:
+            pass
 
 
 # ═══════════════════ Phase 3: ProxyProvider abstraction ═══════════════════
@@ -117,7 +209,7 @@ class RotateUrlProvider(ProxyProvider):
     """Single mobile channel through gost; IP changes only by hitting the rotate URL."""
 
     async def get_proxy_url(self) -> str | None:
-        return settings.proxy_http_gateway
+        return worker_gateway()
 
     async def rotate_before_request(self) -> None:
         # Rotating every request on a single channel costs the full rotate wait — skip it.
@@ -125,7 +217,7 @@ class RotateUrlProvider(ProxyProvider):
         return None
 
     async def report_rate_limited(self, proxy_url: str | None = None) -> bool:
-        return await rotate_ip_verified()
+        return await rotate_ip_guarded()
 
 
 class PoolProvider(ProxyProvider):
@@ -160,8 +252,8 @@ class PoolProvider(ProxyProvider):
         await self._ensure_loaded()
         alive = self._alive()
         if not alive:
-            # Empty/all-dead pool → placeholder single IP so we don't crash.
-            return settings.proxy_http_gateway
+            # Empty/all-dead pool → placeholder single channel so we don't crash.
+            return worker_gateway()
         url = alive[self._idx % len(alive)]
         self._idx += 1
         return url
@@ -172,7 +264,7 @@ class PoolProvider(ProxyProvider):
             logger.warning(f"[proxy] IP cooled down {_DEAD_COOLDOWN_SEC}s: {proxy_url.split('@')[-1]}")
             return True
         # Single-IP fallback → nothing better to switch to; try rotate URL if any.
-        return await rotate_ip_verified()
+        return await rotate_ip_guarded()
 
 
 _provider: ProxyProvider | None = None

@@ -15,8 +15,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    # Loopback-only: Postgres must never be reachable from the public internet. Host tooling
+    # (psql, backups) reaches it via 127.0.0.1:5432; containers use the `postgres` DNS name.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -45,8 +47,13 @@ services:
     command: >
       -L=http://:8888
       -F=${PROXY_TYPE}://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}
+    # Loopback-only: this is an OPEN http proxy (no auth). Published on 0.0.0.0 it was found
+    # by scanners and abused as a free relay through the paid fxdx upstream (FTP/Winbox scans,
+    # random sites) — burning the traffic cap and getting the exit-IP flagged. The parser
+    # never needs a host port: it reaches the proxy via the internal `gost:8888` DNS name.
+    # Kept published on loopback only for local debugging (curl -x http://127.0.0.1:8888).
     ports:
-      - "8888:8888"
+      - "127.0.0.1:8888:8888"
 
   # Coordinator + discovery poll loop: watches ParserRun(triggered), fans out RQ chunk
   # jobs, monitors them to completion. No heavy pagination here → modest memory.
@@ -86,7 +93,8 @@ services:
     build:
       context: ./parser
       dockerfile: Dockerfile
-    restart: unless-stopped
+    # always: come back after OOM/crash even if someone stopped the stack briefly
+    restart: always
     logging: *default-logging
     env_file:
       - .env
@@ -102,7 +110,14 @@ services:
         condition: service_started
     volumes:
       - ./parser:/app
-    command: ["rq", "worker", "--url", "${REDIS_URL:-redis://spy_redis:6379/0}", "parse"]
+    # Inner loop restarts RQ on process crash; Docker restart: covers container death.
+    command: ["sh", "/app/rq_watchdog.sh", "parse"]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 \"$$(cat /tmp/rq-worker.pid)\" 2>/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     ulimits:
       core: 0
     deploy:
@@ -117,7 +132,7 @@ services:
     build:
       context: ./parser
       dockerfile: Dockerfile
-    restart: unless-stopped
+    restart: always
     logging: *default-logging
     env_file:
       - .env
@@ -133,7 +148,13 @@ services:
         condition: service_started
     volumes:
       - ./parser:/app
-    command: ["rq", "worker", "--url", "${REDIS_URL:-redis://spy_redis:6379/0}", "media"]
+    command: ["sh", "/app/rq_watchdog.sh", "media"]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 \"$$(cat /tmp/rq-worker.pid)\" 2>/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     ulimits:
       core: 0
     deploy:

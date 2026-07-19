@@ -7,8 +7,26 @@ class Settings(BaseSettings):
     database_url: str
 
     proxy_http_gateway: str = "http://gost:8888"
+    # Multiple upstream gost channels (one per fxdx exit-IP). Today there's ONE exit-IP shared
+    # by every worker — so parallelism just burns FB's limit twice as fast and makes workers
+    # fight over rotation. When the fxdx tariff is expanded, run one gost per upstream and list
+    # them here (JSON, e.g. ["http://gost:8888","http://gost2:8888"]); each worker then binds to
+    # ONE channel (proxy.worker_gateway) so exit-IPs are spread across workers. Empty (default)
+    # → the single PROXY_HTTP_GATEWAY, i.e. current behaviour unchanged.
+    proxy_http_gateways: list[str] = []
     proxy_rotate_url: str
     proxy_rotate_wait_sec: int = 20
+    # ── IP-rotation storm control (single shared exit IP via fxdx/gost) ──
+    # All workers share ONE exit IP, so a rotation changes it for everyone. When several
+    # workers hit a rate limit at once they used to all call the rotate URL together →
+    # fxdx returns "429 Too Many Requests" and the rotation never lands. A Redis lock makes
+    # rotation exclusive; a global cooldown throttles how often the shared IP flips; a 429
+    # backoff waits fxdx out; a settle pause after a change lets the new upstream come up
+    # (kills the "IP check failed: 503" right after a rotation).
+    rotate_lock_ttl_sec: int = 30      # max time one worker may hold the rotate lock
+    rotate_cooldown_sec: int = 45      # min gap between shared-IP rotations across all workers
+    rotate_429_backoff_sec: int = 60   # wait this long when the rotate URL answers 429
+    rotate_settle_sec: int = 8         # pause after a successful change before hitting FB again
 
     s3_endpoint_url: str
     s3_bucket: str
@@ -41,6 +59,19 @@ class Settings(BaseSettings):
     pagination_delay_max: float = 3.5
     # curl_cffi per-request timeout (seconds)
     curl_timeout: int = 30
+    # Stall guard: after this many CONSECUTIVE pages that add ZERO *new* ads (FB looping the
+    # same nodes while still claiming has_next=True), treat the chunk as exhausted and close
+    # it — otherwise it re-runs forever, re-chewing collected data while other days wait.
+    # Note: the streak resets on ANY page with new>0, so a genuinely-collecting chunk (even a
+    # 1990-page one) never trips this — only a real loop does (the pathological case seen was
+    # 114 in a row). Set generously above the largest already-saved prefix a fresh-restarted
+    # chunk might re-scan before new cards appear. Tune via PAGINATION_STALL_PAGES.
+    pagination_stall_pages: int = 60
+    # A single transient network blip (ERR_TUNNEL_CONNECTION_FAILED / ERR_PROXY_CONNECTION_FAILED
+    # / curl 7,35,56 …) should NOT kill a multi-hour chunk. Retry the current pagination
+    # segment (resuming from the saved cursor) this many times with growing backoff first.
+    net_transient_retries: int = 4
+    net_transient_backoff_sec: float = 5.0
     # Hard ceiling on ads collected per (config, date-chunk) pagination run. This is a
     # safety cap against a broken/looping cursor — NOT a target. Set high enough that on
     # a normal daily/weekly slice FB itself signals has_next=False before we hit it.

@@ -150,6 +150,7 @@ class ParsingConfigOut(BaseModel):
     sort_direction: str = "desc"
     created_at: datetime
     updated_at: datetime
+    filters_updated_at: datetime | None = None
     ads_count: int = 0
     last_parsed_at: datetime | None = None
 

@@ -64,7 +64,12 @@ class ParsingConfig(Base):
     last_parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # updated_at bumps on ANY row write (incl. the parser stamping last_parsed_at each run), so
+    # it can't tell you when the FILTERS were last edited. filters_updated_at is set only by the
+    # admin config-edit endpoint when a filtering field actually changes (country/date_from/
+    # date_to/keyword/vertical/sort_*) — the parser never touches it.
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    filters_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("keyword", "country", "sort_mode", "sort_direction", name="uq_keyword_country_sort"),
@@ -266,6 +271,11 @@ class ChunkProgress(Base):
     last_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
     collected_count: Mapped[int] = mapped_column(Integer, default=0)
     has_next: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Final per-chunk stats (the "chunk done" totals) persisted to the DB so reporting no
+    # longer depends on docker logs, which are wiped on image rebuild. Written by the
+    # coordinator when a chunk job finishes; last_run_id attributes it to a ParserRun.
+    last_stats: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

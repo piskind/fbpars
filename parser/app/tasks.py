@@ -35,10 +35,12 @@ def _rotate_ip_on_retry() -> None:
         attempt = 0
 
     if attempt > 0:
-        from app.proxy import rotate_ip
+        # Guarded rotation: many chunks can retry at once, so serialise the shared-IP flip
+        # (Redis lock + cooldown) instead of stampeding the rotate URL into a 429.
+        from app.proxy import rotate_ip_guarded
         logger.info(f"[parse_chunk] retry #{attempt} of {job.id} — rotating IP before re-attempt")
         try:
-            asyncio.run(rotate_ip())
+            asyncio.run(rotate_ip_guarded())
         except Exception as exc:
             logger.warning(f"[parse_chunk] pre-retry IP rotation failed: {exc}")
 

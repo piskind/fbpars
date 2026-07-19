@@ -15,7 +15,7 @@ async def find_ad_by_library_id_and_country(
     The same FB archive_id runs in several countries; we keep a separate row per country
     so an ad collected under PE doesn't shadow the same ad collected under MX (which would
     otherwise resolve to the PE row, inherit its APPROVED moderation, and be dropped as
-    skipped_already_rejected). Matches the (library_id, country) unique constraint.
+    skipped_already_reviewed). Matches the (library_id, country) unique constraint.
     """
     stmt = select(Ad).where(
         Ad.library_id == library_id, func.upper(Ad.country) == country.upper()
@@ -124,7 +124,9 @@ async def upsert_ad(
             existing.ip = enriched["ip"]
 
         await session.flush()
-        logger.debug(f"updated {card.library_id}: reviewed={is_reviewed}")
+        # TRACE, not DEBUG: this fires once per card (hundreds/sec during a run) and used to
+        # bury the useful lines. Still available at LOG_LEVEL=TRACE for deep debugging.
+        logger.trace(f"updated {card.library_id}: reviewed={is_reviewed}")
         return existing, False, is_reviewed
 
     ad = Ad(

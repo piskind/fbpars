@@ -44,10 +44,10 @@ RUN pip install -r requirements.txt
 # Установка Playwright + Chromium
 RUN playwright install chromium
 
-# supercronic для cron-режима refresh-воркера (arch-aware: amd64 / arm64)
-RUN ARCH=$(dpkg --print-architecture) && \
-    wget -q "https://github.com/aptible/supercronic/releases/download/v0.2.33/supercronic-linux-${ARCH}" \
-    -O /usr/local/bin/supercronic && chmod +x /usr/local/bin/supercronic
+# NB: the manually-fetched supercronic binary was removed — nothing invokes it (the refresh
+# service runs `python -m app.scheduler`, an in-process loop). It was NOT related to curl_cffi:
+# curl_cffi==0.15.0 ships its own libcurl-impersonate inside the wheel, so no system curl
+# binary is fetched or needed for the curl pagination path.
 
 COPY . .
 

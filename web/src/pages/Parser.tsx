@@ -30,8 +30,13 @@ function fmtDuration(run: ParserRun): string {
   if (!run.started_at || !run.finished_at) return '—'
   const sec = Math.round((new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()) / 1000)
   if (sec < 60) return `${sec}с`
-  const min = Math.floor(sec / 60)
-  return `${min}м ${sec % 60}с`
+  if (sec < 3600) {
+    const min = Math.floor(sec / 60)
+    return `${min}м ${sec % 60}с`
+  }
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  return `${h}ч ${m}м`
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -222,7 +227,7 @@ export default function ParserPage() {
                 <th className="text-left px-4 py-2">Длит.</th>
                 <th className="text-left px-4 py-2">Новых</th>
                 <th className="text-left px-4 py-2">Обновл.</th>
-                <th className="text-left px-4 py-2">Медиа OK</th>
+                <th className="text-left px-4 py-2">С медиа</th>
                 <th className="text-left px-4 py-2">Ошибок</th>
                 <th className="text-left px-4 py-2">Пропущено</th>
               </tr>
@@ -241,9 +246,11 @@ export default function ParserPage() {
                   <td className="px-4 py-2">{fmtDuration(r)}</td>
                   <td className="px-4 py-2">{r.stats?.new ?? '—'}</td>
                   <td className="px-4 py-2">{r.stats?.updated ?? '—'}</td>
-                  <td className="px-4 py-2">{r.stats?.media_ok ?? '—'}</td>
+                  {/* Media is served as direct FB CDN URLs (not downloaded to S3), so media_ok
+                      is always 0. Show urls_saved — new ads that carry at least one media URL. */}
+                  <td className="px-4 py-2">{r.stats?.urls_saved ?? r.stats?.media_ok ?? '—'}</td>
                   <td className="px-4 py-2 text-red-500">{r.stats?.errors ?? '—'}</td>
-                  <td className="px-4 py-2 text-gray-400">{r.stats?.skipped_already_rejected ?? '—'}</td>
+                  <td className="px-4 py-2 text-gray-400">{r.stats?.skipped_already_reviewed ?? r.stats?.skipped_already_rejected ?? '—'}</td>
                 </tr>
               ))}
             </tbody>

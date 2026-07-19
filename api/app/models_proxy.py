@@ -65,6 +65,9 @@ class ParsingConfig(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # Set only when the admin edits a filtering field (see parser models.py note) — unlike
+    # updated_at, which the parser clobbers every run by stamping last_parsed_at.
+    filters_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("keyword", "country", "sort_mode", "sort_direction", name="uq_keyword_country_sort"),

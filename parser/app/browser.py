@@ -74,12 +74,15 @@ async def browser_context(
     semaphore lets callers use the short-lived _TOKEN_SEMAPHORE pool instead of the
     global single-Chromium _BROWSER_SEMAPHORE.
     """
+    from app.proxy import worker_gateway  # local import avoids a module-load cycle
     sem = semaphore or _BROWSER_SEMAPHORE
     async with sem:
         async with async_playwright() as pw:
             browser: Browser = await pw.chromium.launch(
                 headless=settings.headless,
-                proxy={"server": settings.proxy_http_gateway},
+                # Same exit channel as this worker's curl path (worker_gateway) so token
+                # capture and pagination share one IP; single-channel setups are unchanged.
+                proxy={"server": worker_gateway()},
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",

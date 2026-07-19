@@ -141,7 +141,7 @@ def split_date_range(date_from: date, date_to: date, chunk_days: int = 1) -> lis
 _EMPTY_STATS = {
     "raw": 0, "new": 0, "updated": 0, "urls_saved": 0, "media_ok": 0, "media_fail": 0,
     "errors": 0, "skipped_duplicate": 0, "skipped_no_media": 0,
-    "skipped_already_rejected": 0, "skipped_phash_duplicate": 0, "removed_no_media": 0,
+    "skipped_already_reviewed": 0, "skipped_phash_duplicate": 0, "removed_no_media": 0,
 }
 
 
@@ -183,7 +183,7 @@ async def _upsert_cards_and_collect_media(
         if is_new:
             stats["new"] += 1
         elif skipped:
-            stats["skipped_already_rejected"] += 1
+            stats["skipped_already_reviewed"] += 1
         else:
             stats["updated"] += 1
 
@@ -362,7 +362,7 @@ async def _scrape_single_period_graphql(
                     stats["new"] += 1
                     saved += 1
                 elif skipped:
-                    stats["skipped_already_rejected"] += 1
+                    stats["skipped_already_reviewed"] += 1
                 else:
                     stats["updated"] += 1
                     saved += 1
@@ -391,7 +391,13 @@ async def _scrape_single_period_graphql(
                 logger.warning(f"[#{config.id}]{period_tag} chunk_progress bookmark failed (cards saved): {e}")
 
         stats["raw"] += len(nodes)
-        phase2 = await _dispatch_media(media_tasks, config, uploader, period_tag)
+        # Media dispatch is best-effort and runs AFTER the cards are committed — a transient
+        # Redis blip enqueuing media jobs must not fail the chunk and force a full re-collect.
+        try:
+            phase2 = await _dispatch_media(media_tasks, config, uploader, period_tag)
+        except Exception as e:
+            logger.warning(f"[#{config.id}]{period_tag} media dispatch failed (cards saved): {e}")
+            phase2 = {}
         for k, v in phase2.items():
             stats[k] = stats.get(k, 0) + v
         logger.info(
@@ -408,7 +414,13 @@ async def _scrape_single_period_graphql(
         )
         seen_ids: set[str] | None = None
         if track_chunk:
-            seen_ids = await _preload_seen_ids(config.country, date_from, date_to)
+            # Preloading saved ids is a dedup OPTIMIZATION — a transient DB hiccup here must
+            # not kill the chunk; worst case we re-process a few already-saved cards (idempotent).
+            try:
+                seen_ids = await _preload_seen_ids(config.country, date_from, date_to)
+            except Exception as e:
+                logger.warning(f"[#{config.id}]{period_tag} preload dedup ids failed (continuing): {e}")
+                seen_ids = None
             if seen_ids:
                 logger.info(f"[#{config.id}]{period_tag} preloaded {len(seen_ids)} saved ids into dedup")
         # Incremental + resumable: paginate() hands each commit_batch_size batch to
@@ -509,7 +521,8 @@ async def _scrape_single_period(
         except Exception as exc:
             logger.error(
                 f"[#{config.id}]{period_tag} GraphQL path failed: {exc} — failing chunk "
-                f"(no silent DOM-scroll fallback); RQ will retry with a fresh IP"
+                f"(no silent DOM-scroll fallback); RQ re-enqueues with backoff + fresh IP "
+                f"while retry attempts remain, then it's counted as an error"
             )
             raise RuntimeError(
                 f"GraphQL scrape failed for config #{config.id}{period_tag}: {exc}"
@@ -535,15 +548,18 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
 
     total_stats = {
         "raw": 0, "new": 0, "updated": 0, "media_ok": 0, "media_fail": 0, "errors": 0,
-        "skipped_duplicate": 0, "skipped_no_media": 0, "skipped_already_rejected": 0,
+        "skipped_duplicate": 0, "skipped_no_media": 0, "skipped_already_reviewed": 0,
         "skipped_phash_duplicate": 0, "removed_no_media": 0,
     }
 
     if use_date_split:
-        chunks = split_date_range(effective_date_from, config.date_to, chunk_days=30)
+        # Single source of truth for chunk width: settings.chunk_days (same value the queue
+        # coordinator slices on). Was hardcoded to 30 here, giving this legacy in-process path
+        # a different granularity than the scaled path.
+        chunks = split_date_range(effective_date_from, config.date_to, chunk_days=settings.chunk_days)
         logger.info(
-            f"[#{config.id}] date-range split: {len(chunks)} monthly sub-periods "
-            f"({effective_date_from} → {config.date_to})"
+            f"[#{config.id}] date-range split: {len(chunks)} sub-period(s) of "
+            f"{settings.chunk_days}d ({effective_date_from} → {config.date_to})"
         )
         for i, (chunk_from, chunk_to) in enumerate(chunks, 1):
             period_tag = f" [month {i}/{len(chunks)} {chunk_from}]"
@@ -685,7 +701,7 @@ async def run_once(
     uploader = MediaUploader()
     total = {
         "raw": 0, "new": 0, "updated": 0, "media_ok": 0, "media_fail": 0, "errors": 0,
-        "skipped_duplicate": 0, "skipped_no_media": 0, "skipped_already_rejected": 0,
+        "skipped_duplicate": 0, "skipped_no_media": 0, "skipped_already_reviewed": 0,
         "skipped_phash_duplicate": 0, "removed_no_media": 0,
     }
 

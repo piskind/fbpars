@@ -39,6 +39,30 @@ class RateLimited(Exception):
     """curl_cffi request returned FB's 1675004 rate-limit sentinel."""
 
 
+# Transient network faults (tunnel/proxy drop, connection reset, timeouts) — a single one
+# of these must NOT kill a multi-hour chunk. paginate() retries the current segment with
+# backoff (resuming from the saved cursor) instead of letting the chunk fail. These strings
+# come from Chromium (net::ERR_*), curl_cffi (curl: (7|35|56)) and httpx.
+_TRANSIENT_MARKERS = (
+    "err_tunnel_connection_failed", "err_proxy_connection_failed",
+    "err_connection_reset", "err_connection_closed", "err_connection_aborted",
+    "err_connection_failed", "err_network_changed", "err_timed_out",
+    "err_address_unreachable", "err_socks_connection_failed", "err_empty_response",
+    "net::err_", "page load failed",
+    "connection reset", "connection refused", "connection aborted",
+    "connection timed out", "read timed out", "timed out", "timeout",
+    "curl: (7)", "curl: (28)", "curl: (35)", "curl: (52)", "curl: (56)",
+    # browser-fetch surfaces a bad upstream as "HTTP 5xx" — usually the exit-IP not being
+    # ready right after a rotation; retry the segment rather than failing the whole chunk.
+    "http 500", "http 502", "http 503", "http 504",
+)
+
+
+def _is_transient_net_error(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    return any(m in s for m in _TRANSIENT_MARKERS)
+
+
 _IMPERSONATE_CANDIDATES: list[str] | None = None
 _IMPERSONATE_IDX = 0
 
@@ -236,6 +260,7 @@ async def _paginate_curl(
     cursor = start_cursor
     pages = 0
     consecutive_rl = 0
+    no_new_streak = 0
 
     async with _CurlAsyncSession() as session:
         while collector.total < max_ads:
@@ -280,10 +305,28 @@ async def _paginate_curl(
             except Exception as exc:
                 raise RuntimeError(f"[curl] page={pages} parse error: {exc}\n{text[:300]}")
 
+            # fetched_* = pulled from FB in this pagination session (NOT rows written to DB —
+            # that's the "committed batch +N cards" line). Disambiguated because both used to
+            # say "new" and a session with fetched_new>0 but committed 0 looked like progress.
             logger.info(
-                f"[curl] page={pages} new={new_count} total={collector.total} has_next={has_next}"
+                f"[curl] page={pages} fetched_new={new_count} fetched_total={collector.total} "
+                f"has_next={has_next}"
             )
             await collector.maybe_flush()  # commit each commit_batch_size cards as we go
+
+            # Stall guard: FB sometimes keeps has_next=True while looping already-seen nodes.
+            # After enough zero-new pages the chunk is effectively exhausted — stop so it gets
+            # closed (has_next=False) instead of grinding for hours on collected data.
+            if new_count == 0:
+                no_new_streak += 1
+                if no_new_streak >= settings.pagination_stall_pages:
+                    logger.warning(
+                        f"[curl] stall guard: {no_new_streak} consecutive pages with 0 new ads "
+                        f"(total={collector.total}) — closing chunk as exhausted"
+                    )
+                    return cursor, True, pages
+            else:
+                no_new_streak = 0
 
             if not next_cursor:
                 logger.info("[curl] no cursor — end of results")
@@ -320,6 +363,7 @@ async def _paginate_browser(
     cursor = start_cursor
     pages = 0
     rl_hits = 0
+    no_new_streak = 0
     recycle_every = max(1, settings.browser_recycle_pages)
 
     while collector.total < max_ads:
@@ -345,10 +389,25 @@ async def _paginate_browser(
                 pages += 1
                 session_pages += 1
                 new_count, next_cursor, has_next = collector.add_response(text)
+                # fetched_* = pulled from FB this session, not DB writes (see 'committed batch').
                 logger.info(
-                    f"[browser-fetch] page={pages} new={new_count} total={collector.total} has_next={has_next}"
+                    f"[browser-fetch] page={pages} fetched_new={new_count} "
+                    f"fetched_total={collector.total} has_next={has_next}"
                 )
                 await collector.maybe_flush()  # commit each commit_batch_size cards as we go
+
+                # Stall guard (see _paginate_curl): close the chunk once FB stops yielding
+                # new ads while still claiming has_next=True.
+                if new_count == 0:
+                    no_new_streak += 1
+                    if no_new_streak >= settings.pagination_stall_pages:
+                        logger.warning(
+                            f"[browser-fetch] stall guard: {no_new_streak} consecutive pages with "
+                            f"0 new ads (total={collector.total}) — closing chunk as exhausted"
+                        )
+                        return cursor, True, pages
+                else:
+                    no_new_streak = 0
 
                 if not next_cursor:
                     return cursor, True, pages
@@ -410,39 +469,61 @@ async def paginate(
     use_curl = mode in ("curl", "auto") and _CURL_AVAILABLE
 
     natural_end = False
+    transient_streak = 0
     try:
         while collector.total < max_ads:
-            # Curl needs tokens up front; browser-only mode captures its own in-session.
-            # (Re)capture on first pass and every session_refresh_every pages.
-            if use_curl and (tokens is None or (total_pages and total_pages % settings.session_refresh_every == 0)):
-                tokens = await capture_session_tokens(url)
-                logger.info(f"[paginate] session tokens ready (pages so far={total_pages})")
-
-            # Chunk pagination so session-refresh boundaries are respected without losing cursor.
-            remaining_to_refresh = settings.session_refresh_every - (total_pages % settings.session_refresh_every)
-            chunk_cap = collector.total + max(1, remaining_to_refresh) * 40  # ~40 ads/page ceiling
-            chunk_max = min(max_ads, chunk_cap)
-            done = False
             try:
-                if use_curl:
-                    cursor, done, pages = await _paginate_curl(
-                        url, tokens, collector, cursor, chunk_max, session_id
-                    )
-                else:
-                    # Browser path captures its own in-session tokens.
-                    cursor, done, pages = await _paginate_browser(
-                        url, collector, cursor, chunk_max, session_id
-                    )
-            except RateLimited as exc:
-                if mode == "auto" and use_curl:
-                    logger.warning(f"[paginate] curl exhausted ({exc}) — switching to browser fallback")
-                    cursor, done, pages = await _paginate_browser(
-                        url, collector, cursor, chunk_max, session_id
-                    )
-                else:
-                    logger.error(f"[paginate] rate limited with no fallback available: {exc}")
-                    raise
+                # Curl needs tokens up front; browser-only mode captures its own in-session.
+                # (Re)capture on first pass and every session_refresh_every pages.
+                if use_curl and (tokens is None or (total_pages and total_pages % settings.session_refresh_every == 0)):
+                    tokens = await capture_session_tokens(url)
+                    logger.info(f"[paginate] session tokens ready (pages so far={total_pages})")
 
+                # Chunk pagination so session-refresh boundaries are respected without losing cursor.
+                remaining_to_refresh = settings.session_refresh_every - (total_pages % settings.session_refresh_every)
+                chunk_cap = collector.total + max(1, remaining_to_refresh) * 40  # ~40 ads/page ceiling
+                chunk_max = min(max_ads, chunk_cap)
+                done = False
+                try:
+                    if use_curl:
+                        cursor, done, pages = await _paginate_curl(
+                            url, tokens, collector, cursor, chunk_max, session_id
+                        )
+                    else:
+                        # Browser path captures its own in-session tokens.
+                        cursor, done, pages = await _paginate_browser(
+                            url, collector, cursor, chunk_max, session_id
+                        )
+                except RateLimited as exc:
+                    if mode == "auto" and use_curl:
+                        logger.warning(f"[paginate] curl exhausted ({exc}) — switching to browser fallback")
+                        cursor, done, pages = await _paginate_browser(
+                            url, collector, cursor, chunk_max, session_id
+                        )
+                    else:
+                        logger.error(f"[paginate] rate limited with no fallback available: {exc}")
+                        raise
+            except RateLimited:
+                raise  # a real rate-limit dead-end, not a transient blip — let it fail the chunk
+            except Exception as exc:
+                # Transient tunnel/proxy/timeout blip: retry the segment from the saved cursor
+                # with growing backoff instead of killing the chunk (the shared exit IP drops
+                # when another worker rotates mid-request). Only after net_transient_retries do
+                # we give up and let the chunk fail (→ RQ retry).
+                if _is_transient_net_error(exc) and transient_streak < settings.net_transient_retries:
+                    transient_streak += 1
+                    backoff = settings.net_transient_backoff_sec * transient_streak
+                    logger.warning(
+                        f"[paginate] transient network error "
+                        f"(retry {transient_streak}/{settings.net_transient_retries} in {backoff:.0f}s, "
+                        f"resuming from cursor, total={collector.total}): {exc}"
+                    )
+                    await asyncio.sleep(backoff)
+                    tokens = None  # force a fresh token session
+                    continue
+                raise
+
+            transient_streak = 0  # a clean segment resets the transient budget
             total_pages += pages
             if done or not cursor:
                 natural_end = True
@@ -455,6 +536,11 @@ async def paginate(
         await _safe_final_flush(collector)
         raise
 
+    # Natural end (FB signalled has_next=False, ran out of cursor, or the stall guard fired):
+    # force the terminal bookmark to has_next=False so enqueue_run skips this chunk next run.
+    # Without this, a "no cursor but has_next still True" end left the chunk resumable forever.
+    if natural_end:
+        collector.has_next = False
     # Normal completion: flush the tail batch; a failure here should fail the chunk.
     await collector.maybe_flush(force=True)
 

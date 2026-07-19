@@ -67,19 +67,40 @@ def detect_language(text: str | None) -> str | None:
         return None
 
 
+# Host → resolved IP (or None for "known unresolvable"). Bounds runaway DNS work: dead
+# advertiser domains ("No address associated with hostname") were re-resolved for every
+# card and each lookup blocked the batch commit until the resolver timed out. The cache
+# collapses repeats to O(1) and the timeout caps any single lookup.
+_DNS_CACHE: dict[str, str | None] = {}
+_DNS_CACHE_MAX = 5000
+_DNS_TIMEOUT_SEC = 2.0
+
+
 async def resolve_ip(link_url: str | None) -> str | None:
     if not link_url:
         return None
-    try:
-        host = urlparse(link_url).hostname
-        if not host:
-            return None
-        loop = asyncio.get_running_loop()
-        ip = await loop.run_in_executor(None, socket.gethostbyname, host)
-        return ip
-    except Exception as e:
-        logger.debug(f"resolve_ip failed for {link_url}: {e}")
+    host = urlparse(link_url).hostname
+    if not host:
         return None
+    if host in _DNS_CACHE:
+        return _DNS_CACHE[host]
+
+    ip: str | None = None
+    try:
+        loop = asyncio.get_running_loop()
+        # Hard timeout so one slow/dead domain can't stall the whole batch on the resolver.
+        ip = await asyncio.wait_for(
+            loop.run_in_executor(None, socket.gethostbyname, host),
+            timeout=_DNS_TIMEOUT_SEC,
+        )
+    except Exception as e:
+        # Cache the failure too — a dead domain stays dead for this run's lifetime.
+        logger.debug(f"resolve_ip failed for {link_url}: {e}")
+        ip = None
+
+    if len(_DNS_CACHE) < _DNS_CACHE_MAX:
+        _DNS_CACHE[host] = ip
+    return ip
 
 
 async def enrich_ad_fields(link_url: str | None, body: str | None) -> dict:

@@ -17,6 +17,10 @@ build/
 .env.local
 *.env
 
+# Prod-only compose tuning (memory limits, replicas). Gitignored so `git pull` never
+# clobbers it — see docker-compose.override.yml.example and README "Prod tuning".
+docker-compose.override.yml
+
 .vscode/
 .idea/
 *.swp

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +37,7 @@ def _config_out(cfg: ParsingConfig, ads_count: int = 0, last_parsed_at: datetime
         sort_direction=cfg.sort_direction,
         created_at=cfg.created_at,
         updated_at=cfg.updated_at,
+        filters_updated_at=cfg.filters_updated_at,
         ads_count=ads_count,
         last_parsed_at=last_parsed_at,
     )
@@ -113,16 +114,27 @@ async def update_config(
     if not cfg:
         raise HTTPException(status_code=404, detail="Not found")
 
+    # Track whether any FILTERING field actually changes, so filters_updated_at reflects real
+    # edits (not the parser's per-run writes). Fields per C2: country/date_from/date_to/
+    # keyword/vertical/sort_mode/sort_direction.
+    filters_changed = False
+
+    def _set_filter(attr: str, value) -> None:
+        nonlocal filters_changed
+        if getattr(cfg, attr) != value:
+            filters_changed = True
+        setattr(cfg, attr, value)
+
     if body.keyword is not None:
-        cfg.keyword = body.keyword
+        _set_filter("keyword", body.keyword)
     if body.country is not None:
-        cfg.country = body.country
+        _set_filter("country", body.country)
     if body.is_active is not None:
         cfg.is_active = body.is_active
     if body.notes is not None:
         cfg.notes = body.notes
     if body.vertical is not None:
-        cfg.vertical = body.vertical
+        _set_filter("vertical", body.vertical)
     if body.partner is not None:
         cfg.partner = body.partner
     if body.category is not None:
@@ -138,9 +150,9 @@ async def update_config(
     if body.platforms is not None:
         cfg.platforms = body.platforms
     if body.date_from is not None:
-        cfg.date_from = body.date_from
+        _set_filter("date_from", body.date_from)
     if body.date_to is not None:
-        cfg.date_to = body.date_to
+        _set_filter("date_to", body.date_to)
     if body.advertiser is not None:
         cfg.advertiser = body.advertiser
     if body.auto_date_from_last_parse is not None:
@@ -148,9 +160,12 @@ async def update_config(
     if body.is_targeted_country is not None:
         cfg.is_targeted_country = body.is_targeted_country
     if body.sort_mode is not None:
-        cfg.sort_mode = body.sort_mode
+        _set_filter("sort_mode", body.sort_mode)
     if body.sort_direction is not None:
-        cfg.sort_direction = body.sort_direction
+        _set_filter("sort_direction", body.sort_direction)
+
+    if filters_changed:
+        cfg.filters_updated_at = datetime.now(timezone.utc)
 
     await session.commit()
     await session.refresh(cfg)

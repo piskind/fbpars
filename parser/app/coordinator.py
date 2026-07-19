@@ -19,12 +19,89 @@ from app.worker import get_active_configs, split_date_range
 
 _STAT_KEYS = (
     "raw", "new", "updated", "media_ok", "media_fail", "errors",
-    "skipped_duplicate", "skipped_no_media", "skipped_already_rejected",
+    "skipped_duplicate", "skipped_no_media", "skipped_already_reviewed",
     "skipped_phash_duplicate", "removed_no_media",
 )
 
 # RQ terminal statuses (canceled/stopped spellings vary across rq versions).
 _TERMINAL = {"finished", "failed", "canceled", "cancelled", "stopped"}
+
+# Set by app.main's SIGTERM/SIGINT handler so monitor_run can bail out promptly (persisting
+# stats) instead of leaving the coordinator to be SIGKILLed 10s into a docker restart.
+shutdown_event = asyncio.Event()
+
+
+def _iso_to_date(v: str | None) -> date | None:
+    return date.fromisoformat(v) if v else None
+
+
+def _chunk_label(config_id, df_iso: str | None, dt_iso: str | None) -> str:
+    """Readable '#<cfg> [df..dt]' for the admin log, from a job's kwargs."""
+    if df_iso or dt_iso:
+        return f"#{config_id} [{df_iso}..{dt_iso}]"
+    return f"#{config_id}"
+
+
+async def _persist_run_stats(run_id: int, total: dict) -> None:
+    """Write the running aggregate to parser_runs.stats NOW, so a cancel / crash / SIGKILL
+    keeps whatever finished chunks contributed (Task: stats were only written once at the
+    very end, and the coordinator is frequently killed before it gets there)."""
+    try:
+        async with AsyncSessionLocal() as session:
+            run = await session.get(ParserRun, run_id)
+            if run:
+                run.stats = dict(total)
+                await session.commit()
+    except Exception as exc:
+        logger.warning(f"[coordinator] run #{run_id}: could not persist stats: {exc}")
+
+
+async def _persist_chunk_result(run_id: int, config_id, df_iso: str | None, dt_iso: str | None, result: dict) -> None:
+    """Store a finished chunk's final stats in chunk_progress (last_stats/last_run_id) so the
+    per-chunk 'done' totals survive a docker image rebuild — logs get wiped, the DB doesn't.
+    UPDATE-only: a chunk that saved nothing has no row and needs none (it collected nothing)."""
+    if config_id is None:
+        return
+    try:
+        kdf, kdt = chunk_key(_iso_to_date(df_iso), _iso_to_date(dt_iso))
+        async with AsyncSessionLocal() as session:
+            row = await session.get(ChunkProgress, (config_id, kdf, kdt))
+            if row is not None:
+                row.last_stats = {k: v for k, v in result.items() if isinstance(v, int)}
+                row.last_run_id = run_id
+                await session.commit()
+    except Exception as exc:
+        logger.warning(f"[coordinator] could not persist chunk result for #{config_id}: {exc}")
+
+
+async def _log_chunk_progress(coords: list, progress_seen: dict, started_seen: set) -> None:
+    """Surface live collection into the admin log_tail by reading chunk_progress (the workers
+    run in separate processes, so their own stdout never reaches the run's log sink). Logs a
+    'collecting' line the first time a chunk appears and a '+N cards' delta as it grows."""
+    if not coords:
+        return
+    try:
+        async with AsyncSessionLocal() as session:
+            for config_id, kdf, kdt, label in coords:
+                row = await session.get(ChunkProgress, (config_id, kdf, kdt))
+                if row is None:
+                    continue
+                key = (config_id, kdf, kdt)
+                prev = progress_seen.get(key)
+                if key not in started_seen:
+                    started_seen.add(key)
+                    logger.info(
+                        f"[coordinator] chunk {label} collecting: "
+                        f"{row.collected_count} saved so far (has_next={row.has_next})"
+                    )
+                elif prev is not None and row.collected_count != prev:
+                    logger.info(
+                        f"[coordinator] chunk {label}: committed batch +{row.collected_count - prev} "
+                        f"cards (total {row.collected_count}, has_next={row.has_next})"
+                    )
+                progress_seen[key] = row.collected_count
+    except Exception as exc:
+        logger.warning(f"[coordinator] chunk-progress log failed: {exc}")
 
 
 def _chunks_for(config) -> list[tuple[date | None, date | None]]:
@@ -129,62 +206,121 @@ async def monitor_run(run_id: int, job_ids: list[str], poll_sec: int = 5) -> dic
     total = {k: 0 for k in _STAT_KEYS}
     pending = set(job_ids)
     last_report = -1
+    progress_seen: dict = {}   # chunk key -> collected_count last logged (delta detection)
+    started_seen: set = set()  # chunks we've already logged a first "collecting" line for
+    polls = 0
 
     while pending:
         await asyncio.sleep(poll_sec)
+        polls += 1
 
-        # Honour admin cancel: stop pending jobs and bail.
-        async with AsyncSessionLocal() as session:
-            run = await session.get(ParserRun, run_id)
-        if run and run.status == "cancelled":
-            for jid in list(pending):
-                try:
-                    Job.fetch(jid, connection=conn).cancel()
-                except Exception:
-                    pass
-            logger.info(f"[coordinator] run #{run_id} cancelled — stopped {len(pending)} pending job(s)")
+        # Graceful shutdown (SIGTERM): persist what we have and stop monitoring. Jobs keep
+        # running in the workers and resume from chunk_progress on the next run.
+        if shutdown_event.is_set():
+            await _persist_run_stats(run_id, total)
+            logger.info(f"[coordinator] run #{run_id}: shutdown requested — stats persisted, monitor stopping")
             return total
 
-        # Move jobs whose work-horse died (OOM / timeout / crash) out of 'started' so we
-        # don't wait on them forever; then treat FailedJobRegistry membership as terminal.
+        # A single bad poll (Redis hiccup, transient fetch error) must not silently kill the
+        # monitor loop — that's the "0/33 chunks done then silence for hours" symptom.
         try:
-            started_reg.cleanup()
-            failed_reg.cleanup()
-            failed_ids = set(failed_reg.get_job_ids())
-        except Exception as exc:
-            logger.warning(f"[coordinator] registry cleanup failed: {exc}")
-            failed_ids = set()
+            # Honour admin cancel: stop pending jobs and bail (keeping stats).
+            async with AsyncSessionLocal() as session:
+                run = await session.get(ParserRun, run_id)
+            if run and run.status == "cancelled":
+                for jid in list(pending):
+                    try:
+                        Job.fetch(jid, connection=conn).cancel()
+                    except Exception:
+                        pass
+                await _persist_run_stats(run_id, total)
+                logger.info(f"[coordinator] run #{run_id} cancelled — stopped {len(pending)} pending job(s)")
+                return total
 
-        for jid in list(pending):
+            # Move jobs whose work-horse died (OOM / timeout / crash) out of 'started' so we
+            # don't wait on them forever; then treat FailedJobRegistry membership as terminal.
             try:
-                job = Job.fetch(jid, connection=conn)
-            except Exception:
-                # Job data expired/gone — stop waiting, count it as a failed chunk.
-                logger.warning(f"[coordinator] job {jid} vanished — treating as failed")
-                total["errors"] = total.get("errors", 0) + 1
-                pending.discard(jid)
-                continue
+                started_reg.cleanup()
+                failed_reg.cleanup()
+                failed_ids = set(failed_reg.get_job_ids())
+            except Exception as exc:
+                logger.warning(f"[coordinator] registry cleanup failed: {exc}")
+                failed_ids = set()
 
-            status = job.get_status(refresh=True)
-            if jid in failed_ids or status == "failed":
-                total["errors"] = total.get("errors", 0) + 1
-                tail = (job.exc_info or "")[-300:]
-                logger.warning(f"[coordinator] job {jid} failed: {tail}")
-                pending.discard(jid)
-                continue
-            if status in _TERMINAL:
-                # finished (aggregate) or canceled/stopped (just drop).
-                if status == "finished" and isinstance(job.result, dict):
-                    for k, v in job.result.items():
-                        if isinstance(v, int):
-                            total[k] = total.get(k, 0) + v
-                pending.discard(jid)
+            # Fetch each pending job once; reuse for both status and progress logging.
+            jobs: dict = {}
+            for jid in list(pending):
+                try:
+                    jobs[jid] = Job.fetch(jid, connection=conn)
+                except Exception:
+                    # Job data expired/gone — stop waiting, count it as a failed chunk.
+                    logger.warning(f"[coordinator] job {jid} vanished — treating as failed")
+                    total["errors"] = total.get("errors", 0) + 1
+                    pending.discard(jid)
 
-        done = len(job_ids) - len(pending)
-        if done != last_report:
-            logger.info(f"[coordinator] run #{run_id}: {done}/{len(job_ids)} chunks done")
-            last_report = done
+            for jid, job in jobs.items():
+                if jid not in pending:
+                    continue
+                kw = job.kwargs or {}
+                label = _chunk_label(kw.get("config_id"), kw.get("date_from"), kw.get("date_to"))
+                status = job.get_status(refresh=True)
+                if jid in failed_ids or status == "failed":
+                    total["errors"] = total.get("errors", 0) + 1
+                    tail = (job.exc_info or "")[-300:]
+                    logger.warning(f"[coordinator] chunk {label} failed: {tail}")
+                    pending.discard(jid)
+                    continue
+                if status in _TERMINAL:
+                    # finished (aggregate + log a real summary) or canceled/stopped (just drop).
+                    if status == "finished" and isinstance(job.result, dict):
+                        r = job.result
+                        for k, v in r.items():
+                            if isinstance(v, int):
+                                total[k] = total.get(k, 0) + v
+                        logger.info(
+                            f"[coordinator] chunk {label} done: raw={r.get('raw', 0)} "
+                            f"new={r.get('new', 0)} updated={r.get('updated', 0)} "
+                            f"skipped_reviewed={r.get('skipped_already_reviewed', 0)} "
+                            f"errors={r.get('errors', 0)}"
+                        )
+                        # Persist the per-chunk totals to the DB (survives log wipes).
+                        await _persist_chunk_result(
+                            run_id, kw.get("config_id"), kw.get("date_from"), kw.get("date_to"), r
+                        )
+                    pending.discard(jid)
 
+            # Surface live collection (committed batches, chunk starts) from chunk_progress.
+            coords = []
+            for jid in pending:
+                job = jobs.get(jid)
+                if job is None:
+                    continue
+                kw = job.kwargs or {}
+                cid = kw.get("config_id")
+                if cid is None:
+                    continue
+                kdf, kdt = chunk_key(_iso_to_date(kw.get("date_from")), _iso_to_date(kw.get("date_to")))
+                coords.append((cid, kdf, kdt, _chunk_label(cid, kw.get("date_from"), kw.get("date_to"))))
+            await _log_chunk_progress(coords, progress_seen, started_seen)
+
+            # Persist the aggregate incrementally so cancel/crash/kill keeps the numbers.
+            await _persist_run_stats(run_id, total)
+
+            done = len(job_ids) - len(pending)
+            if done != last_report:
+                logger.info(f"[coordinator] run #{run_id}: {done}/{len(job_ids)} chunks done")
+                last_report = done
+            elif polls % 12 == 0:
+                # Heartbeat (~once a minute at poll_sec=5) so the monitor is never silent for
+                # hours — makes a genuine stall visible instead of looking like a dead loop.
+                logger.info(
+                    f"[coordinator] run #{run_id}: monitoring {len(pending)} chunk(s) "
+                    f"(new={total['new']} updated={total['updated']} raw={total['raw']})"
+                )
+        except Exception as exc:
+            logger.warning(f"[coordinator] run #{run_id}: monitor poll error (continuing): {exc}")
+
+    await _persist_run_stats(run_id, total)
     logger.info(f"[coordinator] run #{run_id} complete: {total}")
     return total
 
