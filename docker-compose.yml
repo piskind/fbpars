@@ -110,10 +110,15 @@ services:
         condition: service_started
     volumes:
       - ./parser:/app
-    # Inner loop restarts RQ on process crash; Docker restart: covers container death.
-    command: ["sh", "/app/rq_watchdog.sh", "parse"]
+    # SINGLE SOURCE OF TRUTH for the worker command. --with-scheduler is REQUIRED: without a
+    # running RQ scheduler, Retry(interval=...) puts a rate-limited chunk in the
+    # ScheduledJobRegistry and nothing ever promotes it back → the worker goes idle and the day
+    # is under-collected. `restart: always` above covers process crash / container death (this
+    # replaces the old rq_watchdog.sh inner loop, which lived in an untracked file that never
+    # reached prod, so the flag added there never actually ran).
+    command: ["rq", "worker", "--with-scheduler", "--url", "${REDIS_URL:-redis://spy_redis:6379/0}", "parse"]
     healthcheck:
-      test: ["CMD-SHELL", "kill -0 \"$$(cat /tmp/rq-worker.pid)\" 2>/dev/null"]
+      test: ["CMD-SHELL", "pgrep -f 'rq worker' >/dev/null 2>&1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -148,9 +153,11 @@ services:
         condition: service_started
     volumes:
       - ./parser:/app
-    command: ["sh", "/app/rq_watchdog.sh", "media"]
+    # Same single-source command as parser-worker. Media jobs don't use Retry today, but
+    # --with-scheduler is harmless and keeps both worker commands identical.
+    command: ["rq", "worker", "--with-scheduler", "--url", "${REDIS_URL:-redis://spy_redis:6379/0}", "media"]
     healthcheck:
-      test: ["CMD-SHELL", "kill -0 \"$$(cat /tmp/rq-worker.pid)\" 2>/dev/null"]
+      test: ["CMD-SHELL", "pgrep -f 'rq worker' >/dev/null 2>&1"]
       interval: 30s
       timeout: 5s
       retries: 3
