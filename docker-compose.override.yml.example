@@ -21,7 +21,7 @@ services:
       resources:
         limits:
           # Chromium (token capture / browser-fetch fallback) can spike RSS well past the
-          # 700m repo default; prod runs 6144m.
+          # 1536m repo default; prod runs 6144m.
           memory: 6144m
 
 # NB: knobs like CHUNK_DAYS, MAX_ADS_PER_CHUNK, PARSER_WORKERS live in `.env` (also gitignored),

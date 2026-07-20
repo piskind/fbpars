@@ -97,8 +97,15 @@ class Settings(BaseSettings):
     chunk_days: int = 1
     # Number of RQ parser worker replicas (scaled in docker-compose).
     parser_workers: int = 4
-    # RQ job hard timeout (seconds) for one chunk / one media task.
-    parse_job_timeout: int = 3600
+    # RQ job hard timeout (seconds). Doubles as how long an ORPHANED chunk — one whose
+    # work-horse was OOM/SIGKILL-ed without the parent worker marking it failed — sits in the
+    # StartedJobRegistry before cleanup reaps it and Retry re-runs it on another worker. Kept
+    # moderate (was 3600) so a crashed chunk is auto-picked-back-up in ≤30min instead of ≤1h.
+    # Safe to lower because pagination commits every commit_batch_size cards and resumes from
+    # chunk_progress.last_cursor — a killed+retried chunk continues from its bookmark, it does
+    # NOT restart the day. If you see HEALTHY long chunks getting cut mid-collection (log shows
+    # a timeout while has_next=true and cards still committing), raise this back toward 3600.
+    parse_job_timeout: int = 1800
     media_job_timeout: int = 1800
 
     # ── Phase 4: media pipeline ─────────────────────────────────────────

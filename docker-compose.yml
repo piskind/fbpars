@@ -129,7 +129,14 @@ services:
       replicas: ${PARSER_WORKERS:-4}
       resources:
         limits:
-          memory: 700m
+          # Repo default sized for the normal curl path + the short-lived Chromium that only
+          # appears during token capture. 700m was too low even for that — token capture alone
+          # tipped a worker over and it got OOM-killed (exit 137) → restart loop. The
+          # browser-fetch FALLBACK can spike to ~2GB, so PROD raises this in the gitignored
+          # docker-compose.override.yml (6144m). If workers still OOM: confirm that override is
+          # actually present on the box (it's easy to lose — see README), bump it, or lower
+          # PARSER_WORKERS (one shared proxy channel means >1 worker doesn't help anyway).
+          memory: 1536m
 
   # Media workers — download + phash-dedup + S3, off the "media" queue. Video is skipped
   # on the first pass (SKIP_VIDEO_FIRST_PASS) to respect the server's transfer cap.
