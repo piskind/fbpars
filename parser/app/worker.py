@@ -419,9 +419,15 @@ async def _scrape_single_period_graphql(
             f"raw_batch={len(nodes)} has_next={has_next} "
             f"(chunk totals: new={stats['new']} upd={stats['updated']} raw={stats['raw']})"
         )
-        # Progress signal for the stall guard: DB writes this batch, plus errors so a batch
-        # that failed to write (broken chunk) isn't mistaken for an exhausted one and closed.
-        return saved + b["errors"]
+        # Progress signal for the stall guard. Counts as progress:
+        #   saved (new+updated)      — real writes,
+        #   errors                   — a broken batch isn't an exhausted one,
+        #   skipped_no_media         — NEW ads were found (just dropped for lacking media);
+        #                              a chunk still discovering ads must NOT be stall-closed,
+        #                              otherwise a media-extraction regression looks like
+        #                              "exhausted" and hides itself (see skipped_no_media log).
+        # NOT counted: skipped_already_reviewed / already-in-DB dedup — that IS exhaustion.
+        return saved + b["errors"] + b["skipped_no_media"]
 
     if settings.graphql_mode == "fetch":
         logger.info(
