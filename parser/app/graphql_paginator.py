@@ -39,6 +39,15 @@ class RateLimited(Exception):
     """curl_cffi request returned FB's 1675004 rate-limit sentinel."""
 
 
+class EmptyNoPagination(Exception):
+    """FB загрузил поиск, но не инициировал AdLibrarySearchPaginationQuery.
+
+    Так бывает при МАЛОМ числе объяв (все на первой странице — листать нечего) ИЛИ при
+    реально пустом поиске. Курсорной пагинации нет → браузерless-путь ничего не заберёт.
+    Сигнал worker: сделать DOM-fallback (scroll_and_collect соберёт малые результаты с
+    первой страницы; на реально пустом вернёт 0)."""
+
+
 # Transient network faults (tunnel/proxy drop, connection reset, timeouts) — a single one
 # of these must NOT kill a multi-hour chunk. paginate() retries the current segment with
 # backoff (resuming from the saved cursor) instead of letting the chunk fail. These strings
@@ -297,9 +306,9 @@ async def _paginate_curl(
             except Exception as exc:
                 consecutive_rl += 1
                 logger.warning(f"[curl] page={pages + 1} transport error: {exc} (streak={consecutive_rl})")
-                if consecutive_rl > settings.pagination_curl_fallback_after:
+                if consecutive_rl > 25:
                     raise RateLimited(f"curl transport failed {consecutive_rl}x") from exc
-                await asyncio.sleep(_RATE_LIMIT_PAUSE)
+                await asyncio.sleep(1)
                 continue
 
             if _RATE_LIMIT_CODE in text:
@@ -494,6 +503,17 @@ async def paginate(
                 # (Re)capture on first pass and every session_refresh_every pages.
                 if use_curl and (tokens is None or (total_pages and total_pages % settings.session_refresh_every == 0)):
                     tokens = await capture_session_tokens(url)
+                    # FB не дал пагинацию. Либо малый результат (все объявы на первой странице,
+                    # курсора нет), либо реально 0. Браузерless-путь бессилен → на первой
+                    # странице сигналим worker сделать DOM-fallback (соберёт малые результаты;
+                    # на пустом вернёт 0). Если пагинация исчезла В СЕРЕДИНЕ — это конец набора.
+                    if getattr(tokens, "is_empty", False):
+                        if collector.total == 0:
+                            logger.info(f"[paginate] нет пагинации (малый/пустой результат) — DOM-fallback: {url}")
+                            raise EmptyNoPagination()
+                        logger.info(f"[paginate] пагинация закончилась ({collector.total} собрано) — чанк завершён")
+                        natural_end = True
+                        break
                     logger.info(f"[paginate] session tokens ready (pages so far={total_pages})")
 
                 # Chunk pagination so session-refresh boundaries are respected without losing cursor.
@@ -520,6 +540,8 @@ async def paginate(
                     else:
                         logger.error(f"[paginate] rate limited with no fallback available: {exc}")
                         raise
+            except EmptyNoPagination:
+                raise  # малый/пустой результат — не транзиентный сбой, на DOM-fallback
             except RateLimited:
                 raise  # a real rate-limit dead-end, not a transient blip — let it fail the chunk
             except Exception as exc:

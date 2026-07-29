@@ -46,6 +46,9 @@ class SessionTokens:
     base_form_data: dict = field(default_factory=dict)
     variables_template: dict = field(default_factory=dict)
     captured_at: float = 0.0
+    # Страница загрузилась и выполнила поиск, но FB не инициировал пагинацию, т.к. результатов 0
+    # (напр. keyword+гео без объяв). Не ошибка — пагинатор трактует чанк как пустой (0 собрано).
+    is_empty: bool = False
 
     def as_tokens_dict(self) -> dict:
         """Compat shape for graphql_client._build_form_data (expects base_form_data/lsd/doc_id)."""
@@ -205,8 +208,12 @@ def build_library_url(
         url += f"&content_languages%5B{i}%5D={lang}"
     for i, platform in enumerate(platforms or []):
         url += f"&publisher_platforms%5B{i}%5D={platform}"
-    if date_from is not None:
-        url += f"&start_date%5Bmin%5D={date_from}"
+    # ВАЖНО: start_date[min] НЕ эмитим намеренно. Узкое окно [min..max] по дате запуска —
+    # лоссовое: FB отдаёт лишь часть объяв, стартовавших строго в окне (эмпирика: неделя PE
+    # = 246 из 5182 реальных, недобор ~20x; помесячно KZ дало 16k вместо ~50k). Только
+    # start_date[max]=date_to + active_status=all → FB отдаёт ВСЁ запущенное до date_to
+    # (вкл. старых-активных), а курсорная пагинация проходит весь набор. date_from по-прежнему
+    # используется для чанкования диапазона (см. coordinator._chunks_for), но в URL не идёт.
     if date_to is not None:
         url += f"&start_date%5Bmax%5D={date_to}"
     if advertiser:
@@ -302,12 +309,19 @@ async def capture_session_tokens(url: str) -> SessionTokens:
     captured: dict = {}
     async with browser_context(block_resources=True, semaphore=_TOKEN_SEMAPHORE) as context:
         page = await context.new_page()
-        _, pagination_event = await _setup_token_capture(page, captured)
+        any_gql_event, pagination_event = await _setup_token_capture(page, captured)
         await _load_and_scroll(page, url, pagination_event)
 
         try:
             await asyncio.wait_for(pagination_event.wait(), timeout=25.0)
         except asyncio.TimeoutError:
+            # Пагинация не сработала. Если при этом FB всё же отдал GraphQL-ответ на поиск
+            # (any_gql_event), значит страница загрузилась и поиск выполнен, но результатов 0 —
+            # пагинировать нечего. Это НЕ ошибка (частый кейс keyword+гео без объяв): помечаем
+            # чанк пустым, чтобы он завершился как «0 собрано», а не падал в бесконечный retry.
+            if any_gql_event.is_set():
+                logger.info(f"[tokens] поиск вернул 0 объяв (пагинации нет) at {url}")
+                return SessionTokens(is_empty=True)
             raise RuntimeError(f"[tokens] no AdLibrarySearchPaginationQuery fired at {url}")
 
         if not captured.get("base_form_data"):

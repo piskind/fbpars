@@ -240,6 +240,11 @@ class ParserRun(Base):
     status: Mapped[str] = mapped_column(String(16), default="triggered")
     stats: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     log_tail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Что парсим в этом ране: 'keyword' (config_type=keyword), 'filters' (filters+fanpage), 'all' (всё).
+    mode: Mapped[str] = mapped_column(String(16), default="all", server_default="all")
+    # «Подхватить новое»: админка ставит целевой тип ('keyword'|'filters'|'all') → координатор
+    # до-enqueue'ит новые активные конфиги ЭТОГО типа на лету и сбрасывает в NULL.
+    reload_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 # Sentinels so a chunk with an open date bound still has a NOT NULL primary key

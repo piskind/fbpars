@@ -267,11 +267,23 @@ class ParserRunOut(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     status: str
+    mode: str = "all"
     stats: dict | None
     log_tail: str | None = None
 
 
 class ParserStatusOut(BaseModel):
     running: bool
+    current_mode: str | None = None       # режим текущего запущенного рана (keyword/filters/all)
     last_run: ParserRunOut | None = None
     recent_runs: list[ParserRunOut] = []
+    active_keyword: int = 0                # сколько активных keyword-конфигов
+    active_filters: int = 0               # сколько активных filters(+fanpage)-конфигов
+
+
+class ParserStartIn(BaseModel):
+    mode: str = "all"                     # keyword | filters | all
+
+
+class ParserReloadIn(BaseModel):
+    mode: str = "all"                     # какой тип конфигов подхватить: keyword | filters | all

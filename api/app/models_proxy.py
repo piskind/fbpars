@@ -233,6 +233,10 @@ class ParserRun(Base):
     status: Mapped[str] = mapped_column(String(16), default="triggered")
     stats: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     log_tail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Режим рана: 'keyword' | 'filters' | 'all'. См. parser/app/models.py.
+    mode: Mapped[str] = mapped_column(String(16), default="all", server_default="all")
+    # «Подхватить новое»: целевой тип ('keyword'|'filters'|'all'); координатор обрабатывает и сбрасывает в NULL.
+    reload_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class Proxy(Base):

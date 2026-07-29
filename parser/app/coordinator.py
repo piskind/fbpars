@@ -35,11 +35,21 @@ def _iso_to_date(v: str | None) -> date | None:
     return date.fromisoformat(v) if v else None
 
 
+_GEO_BY_CONFIG: dict = {}  # config_id -> country, заполняется в enqueue_run для админ-логов
+
+# Media-срезы для параллельного сбора filters-конфигов. Непересекающиеся по типу медиа
+# (пересечения дедуплятся upsert'ом по library_id). Покрывают все объявы с медиа; 'none'
+# (текст без медиа) не берём — worker всё равно их пропускает (skipped_no_media).
+_MEDIA_SEGMENTS = ("image", "video", "meme")
+
+
 def _chunk_label(config_id, df_iso: str | None, dt_iso: str | None) -> str:
-    """Readable '#<cfg> [df..dt]' for the admin log, from a job's kwargs."""
+    """Readable '#<cfg> <geo> [df..dt]' for the admin log, from a job's kwargs."""
+    geo = _GEO_BY_CONFIG.get(config_id, "")
+    tag = (f"#{config_id} {geo}").rstrip()
     if df_iso or dt_iso:
-        return f"#{config_id} [{df_iso}..{dt_iso}]"
-    return f"#{config_id}"
+        return f"{tag} [{df_iso}..{dt_iso}]"
+    return tag
 
 
 async def _persist_run_stats(run_id: int, total: dict) -> None:
@@ -106,7 +116,7 @@ async def _log_chunk_progress(coords: list, progress_seen: dict, started_seen: s
 
 def _chunks_for(config) -> list[tuple[date | None, date | None]]:
     """Mirror worker.process_config's date-splitting decision, but down to chunk_days."""
-    effective_date_from = config.date_from
+    effective_date_from = min(config.date_from or date(2019, 1, 1), date(2019, 1, 1))
     if config.auto_date_from_last_parse and config.last_parsed_at:
         effective_date_from = config.last_parsed_at.date()
 
@@ -125,7 +135,7 @@ def _iso(d: date | None) -> str | None:
     return d.isoformat() if d else None
 
 
-async def enqueue_run(run_id: int) -> list[str]:
+async def enqueue_run(run_id: int, mode_override: str | None = None) -> list[str]:
     """Enqueue one deduped RQ 'parse' job per (config, date-chunk). Returns job ids."""
     from app.queue import parse_queue
     from app.tasks import parse_chunk
@@ -139,9 +149,45 @@ async def enqueue_run(run_id: int) -> list[str]:
     resumed = 0
 
     async with AsyncSessionLocal() as session:
-        configs = await get_active_configs(session)
+        run = await session.get(ParserRun, run_id)
+        # mode_override — для «подхватить <тип>» (reload); иначе берём режим самого рана.
+        mode = mode_override or (getattr(run, "mode", None) if run else None)  # keyword / filters / all
+        configs = await get_active_configs(session, mode=mode)
+        for _c in configs:
+            _GEO_BY_CONFIG[_c.id] = (getattr(_c, 'country', None) or '?')
 
         for config in configs:
+            # ── Media-сегментация для filters/fanpage ──
+            # Вместо лоссовых узких date-окон (start_date[min] недобирает в разы) гоним
+            # НЕСКОЛЬКО ШИРОКИХ срезов по типу медиа (image/video/meme) — каждый на своём
+            # воркере ПАРАЛЛЕЛЬНО, весь диапазон дат ([max]=date_to, без [min]). upsert по
+            # library_id дедуплит пересечения. Даёт и параллелизм, и полноту. Резюма нет
+            # (track_chunk=False на media-джобах) — прерывание безопасно (upsert идемпотентен).
+            if config.config_type in ("filters", "fanpage"):
+                df = min(config.date_from or date(2019, 1, 1), date(2019, 1, 1))
+                dt = config.date_to
+                for mt in _MEDIA_SEGMENTS:
+                    jid = f"chunk_{config.id}_{mt}_{run_id}"
+                    if Job.exists(jid, connection=conn):
+                        continue
+                    q.enqueue(
+                        parse_chunk,
+                        kwargs={
+                            "config_id": config.id,
+                            "date_from": _iso(df),
+                            "date_to": _iso(dt),
+                            "media_type": mt,
+                            "run_id": run_id,
+                        },
+                        job_id=jid,
+                        job_timeout=settings.parse_job_timeout,
+                        result_ttl=3600,
+                        failure_ttl=86400,
+                        retry=Retry(max=3, interval=[60, 180, 300]),
+                    )
+                    job_ids.append(jid)
+                continue
+            # ── keyword и прочие: обычный date-chunk путь (одно окно, резюмируемое) ──
             for (df, dt) in _chunks_for(config):
                 # Consult the resume bookmark: skip exhausted chunks, resume in-progress
                 # ones from their saved cursor, start fresh ones from the first page.
@@ -240,6 +286,29 @@ async def monitor_run(run_id: int, job_ids: list[str], poll_sec: int = 5) -> dic
                 await _persist_run_stats(run_id, total)
                 logger.info(f"[coordinator] run #{run_id} cancelled — stopped {len(pending)} pending job(s)")
                 return total
+
+            # «Подхватить <тип>»: админка выставила reload_mode ('keyword'|'filters'|'all') →
+            # до-enqueue'им новые активные конфиги ЭТОГО типа на лету (можно и тип, отличный от
+            # режима рана — так «подхватить фильтры» расширит keyword-ран). enqueue_run сам
+            # пропустит уже стоящие/исчерпанные чанки, вернёт только реально новые джобы.
+            reload_mode = getattr(run, "reload_mode", None) if run else None
+            if reload_mode:
+                try:
+                    new_ids = await enqueue_run(run_id, mode_override=reload_mode)
+                except Exception as exc:
+                    new_ids = []
+                    logger.warning(f"[coordinator] run #{run_id}: reload enqueue failed: {exc}")
+                if new_ids:
+                    pending.update(new_ids)
+                async with AsyncSessionLocal() as session:
+                    r2 = await session.get(ParserRun, run_id)
+                    if r2:
+                        r2.reload_mode = None
+                        await session.commit()
+                logger.info(
+                    f"[coordinator] run #{run_id}: подхвачено {len(new_ids)} новых чанк-джоб "
+                    f"(reload тип={reload_mode})"
+                )
 
             # Move jobs whose work-horse died (OOM / timeout / crash) out of 'started' so we
             # don't wait on them forever; then treat FailedJobRegistry membership as terminal.

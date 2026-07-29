@@ -57,12 +57,17 @@ def parse_chunk(
     date_to: str | None = None,
     cursor_start: str | None = None,
     run_id: int | None = None,
+    media_type: str | None = None,
 ) -> dict:
-    """RQ 'parse' queue job: process one (config, date-chunk). Returns the stats dict."""
+    """RQ 'parse' queue job: process one (config, date-chunk). Returns the stats dict.
+
+    media_type — media-сегмент (image/video/meme) для параллельного сбора filters-конфига.
+    """
     from app.worker import process_chunk
     _rotate_ip_on_retry()
     return asyncio.run(
-        process_chunk(config_id, _parse_date(date_from), _parse_date(date_to), cursor_start, run_id)
+        process_chunk(config_id, _parse_date(date_from), _parse_date(date_to), cursor_start, run_id,
+                      media_type=media_type)
     )
 
 

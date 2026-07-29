@@ -16,7 +16,7 @@ from app.browser import (
 from app.parsers.library_card import parse_card_text
 from app.parsers.library_extractor import scroll_and_collect
 from app.graphql_client import map_graphql_card
-from app.graphql_paginator import paginate
+from app.graphql_paginator import paginate, EmptyNoPagination
 from app.repository import upsert_ad, save_creative
 from app.storage import MediaUploader
 from app.proxy import rotate_ip, current_ip
@@ -27,11 +27,19 @@ from app.config import settings
 MEDIA_SEMAPHORE = asyncio.Semaphore(10)
 
 
-async def get_active_configs(session, config_id: int | None = None) -> list[ParsingConfig]:
+async def get_active_configs(
+    session, config_id: int | None = None, mode: str | None = None
+) -> list[ParsingConfig]:
     if config_id is not None:
         cfg = await session.get(ParsingConfig, config_id)
         return [cfg] if cfg else []
-    stmt = select(ParsingConfig).where(ParsingConfig.is_active.is_(True)).order_by(ParsingConfig.id)
+    stmt = select(ParsingConfig).where(ParsingConfig.is_active.is_(True))
+    # Режим рана ограничивает набор конфигов по типу: keyword / filters(+fanpage) / all.
+    if mode == "keyword":
+        stmt = stmt.where(ParsingConfig.config_type == "keyword")
+    elif mode == "filters":
+        stmt = stmt.where(ParsingConfig.config_type.in_(["filters", "fanpage"]))
+    stmt = stmt.order_by(ParsingConfig.id)
     return list((await session.execute(stmt)).scalars().all())
 
 
@@ -436,7 +444,7 @@ async def _scrape_single_period_graphql(
             f"resume_cursor={'yes' if cursor_start else 'no'})"
         )
         seen_ids: set[str] | None = None
-        if track_chunk:
+        if track_chunk and settings.preload_seen_ids:
             # Preloading saved ids is a dedup OPTIMIZATION — a transient DB hiccup here must
             # not kill the chunk; worst case we re-process a few already-saved cards (idempotent).
             try:
@@ -448,7 +456,25 @@ async def _scrape_single_period_graphql(
                 logger.info(f"[#{config.id}]{period_tag} preloaded {len(seen_ids)} saved ids into dedup")
         # Incremental + resumable: paginate() hands each commit_batch_size batch to
         # _persist_batch (cards + cursor bookmark), keeps only the current batch in memory.
-        await paginate(url, start_cursor=cursor_start, on_batch=_persist_batch, seen_ids=seen_ids)
+        try:
+            await paginate(url, start_cursor=cursor_start, on_batch=_persist_batch, seen_ids=seen_ids)
+        except EmptyNoPagination:
+            # FB не дал пагинацию: результатов мало (все на первой странице, курсора нет) ЛИБО 0.
+            # Собираем через DOM-скролл — заберёт малые результаты (keyword+гео с 3-11 объявами),
+            # на реально пустом вернёт 0. Так «нулевые» ключи с реальными объявами не теряются.
+            logger.info(f"[#{config.id}]{period_tag} нет пагинации — DOM-fallback (малый/пустой результат)")
+            dom_stats = await _scrape_single_period_playwright(url, config, uploader, period_tag)
+            for k, v in dom_stats.items():
+                stats[k] = stats.get(k, 0) + v
+            if track_chunk:
+                try:
+                    async with AsyncSessionLocal() as session:
+                        await _upsert_chunk_progress(
+                            session, config.id, date_from, date_to, None, False, dom_stats.get("new", 0)
+                        )
+                        await session.commit()
+                except Exception as e:
+                    logger.warning(f"[#{config.id}]{period_tag} chunk_progress bookmark (DOM-fallback) failed: {e}")
         return stats
 
     # Legacy browser paths (non-default modes) still collect-then-upsert in one shot.
@@ -642,13 +668,18 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
     return total_stats
 
 
-def _build_url_for_config(config: ParsingConfig, date_from: date | None, date_to: date | None) -> str:
-    """Build the Ad Library URL for one config over one date chunk (shared by run_once & chunk jobs)."""
+def _build_url_for_config(config: ParsingConfig, date_from: date | None, date_to: date | None,
+                          media_override: str | None = None) -> str:
+    """Build the Ad Library URL for one config over one date chunk (shared by run_once & chunk jobs).
+
+    media_override — для media-сегментации (image/video/meme): перекрывает media_type_filter
+    конфига, чтобы один filters-конфиг собирался несколькими параллельными media-срезами.
+    """
     ad_type = (config.category or "all") if config.config_type in ("filters", "fanpage") else "all"
     return build_library_url(
         config.country, config.keyword, config.languages,
         active_status=config.active_status or "all",
-        media_type=config.media_type_filter or "all",
+        media_type=media_override or config.media_type_filter or "all",
         platforms=config.platforms,
         date_from=date_from,
         date_to=date_to,
@@ -692,6 +723,7 @@ async def process_chunk(
     date_to: date | None,
     cursor_start: str | None = None,
     run_id: int | None = None,
+    media_type: str | None = None,
 ) -> dict:
     """Process ONE (config, date-chunk) unit — the RQ job body (Phase 2).
 
@@ -713,13 +745,16 @@ async def process_chunk(
         return {"error": f"config {config_id} not found"}
 
     uploader = MediaUploader()
-    url = _build_url_for_config(config, date_from, date_to)
-    period_tag = f" [{date_from}..{date_to}]" if date_from or date_to else ""
+    url = _build_url_for_config(config, date_from, date_to, media_override=media_type)
+    period_tag = (f" [{date_from}..{date_to}]" if date_from or date_to else "") + (f" [{media_type}]" if media_type else "")
     logger.info(f"[#{config_id}]{period_tag} chunk start → {url}")
 
+    # Media-сегменты (media_type задан) НЕ трекаем в chunk_progress: у трёх срезов одного
+    # конфига одинаковые (config_id, date_from, date_to) → коллизия PK. Резюма нет, но upsert
+    # идемпотентен, так что прерывание безопасно (пересбор среза с нуля).
     stats = await _scrape_single_period(
         url, config, uploader, period_tag, cursor_start,
-        date_from=date_from, date_to=date_to, track_chunk=True,
+        date_from=date_from, date_to=date_to, track_chunk=(media_type is None),
     )
 
     async with AsyncSessionLocal() as session:

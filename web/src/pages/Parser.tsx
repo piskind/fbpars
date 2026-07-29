@@ -2,20 +2,32 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 
+type Mode = 'keyword' | 'filters' | 'all'
+
 type ParserRun = {
   id: number
   triggered_at: string
   started_at: string | null
   finished_at: string | null
   status: string
+  mode: string
   stats: Record<string, number> | null
   log_tail: string | null
 }
 
 type ParserStatus = {
   running: boolean
+  current_mode: Mode | null
   last_run: ParserRun | null
   recent_runs: ParserRun[]
+  active_keyword: number
+  active_filters: number
+}
+
+const MODE_LABEL: Record<string, string> = {
+  keyword: 'по ключам',
+  filters: 'по фильтрам',
+  all: 'всё вместе',
 }
 
 function fmtDate(s: string | null): string {
@@ -47,11 +59,15 @@ const STATUS_COLORS: Record<string, string> = {
   cancelled: 'bg-gray-100 text-gray-500',
 }
 
-type LaunchMode = 'global' | 'filtered'
+function errText(e: unknown, fallback: string): string {
+  const err = e as { response?: { data?: { detail?: string } }; message?: string } | null
+  return err?.response?.data?.detail ?? err?.message ?? fallback
+}
 
 export default function ParserPage() {
   const qc = useQueryClient()
-  const [mode, setMode] = useState<LaunchMode>('global')
+  const [notice, setNotice] = useState<string | null>(null)
+  const [reloadOpen, setReloadOpen] = useState(false)
 
   const { data, isLoading } = useQuery({
     queryKey: ['parser-status'],
@@ -69,8 +85,17 @@ export default function ParserPage() {
   })
 
   const start = useMutation({
-    mutationFn: async () => (await api.post('/parser/start', {})).data,
-    onSuccess: () => {
+    mutationFn: async (mode: Mode) => (await api.post('/parser/start', { mode })).data,
+    onSuccess: (_res, mode) => {
+      setNotice(`Запуск «${MODE_LABEL[mode]}» — подхватится за ~15с`)
+      qc.invalidateQueries({ queryKey: ['parser-status'] })
+    },
+  })
+
+  const reload = useMutation({
+    mutationFn: async (mode: Mode) => (await api.post('/parser/reload', { mode })).data,
+    onSuccess: (_res, mode) => {
+      setNotice(`Подхватываю новое (${MODE_LABEL[mode]}) — до ~10с`)
       qc.invalidateQueries({ queryKey: ['parser-status'] })
     },
   })
@@ -78,136 +103,135 @@ export default function ParserPage() {
   const cancel = useMutation({
     mutationFn: async () => (await api.post('/parser/cancel', {})).data,
     onSuccess: () => {
+      setNotice(null)
       qc.invalidateQueries({ queryKey: ['parser-status'] })
     },
   })
 
   const isRunning = data?.running ?? false
+  const kw = data?.active_keyword ?? 0
+  const fl = data?.active_filters ?? 0
+  const busy = start.isPending || reload.isPending || cancel.isPending
+
+  const startButtons: { mode: Mode; label: string; count: number; hint: string }[] = [
+    { mode: 'keyword', label: 'По ключам', count: kw, hint: 'keyword-конфиги' },
+    { mode: 'filters', label: 'По фильтрам', count: fl, hint: 'filters-конфиги' },
+    { mode: 'all', label: 'Всё вместе', count: kw + fl, hint: 'все активные' },
+  ]
 
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">Парсер</h1>
 
-      {/* Status card */}
+      {/* Status / control card */}
       <div className="bg-white rounded-xl shadow p-5 mb-6">
-        <div className="flex items-center gap-6 mb-5">
+        <div className="flex items-center gap-4 mb-5">
           <div className="flex items-center gap-3">
             <span className={`w-3 h-3 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`} />
-            <span className="font-medium text-lg">{isRunning ? 'Запущен' : 'Остановлен'}</span>
+            <span className="font-medium text-lg">
+              {isRunning ? 'Запущен' : 'Остановлен'}
+            </span>
+            {isRunning && data?.current_mode && (
+              <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
+                режим: {MODE_LABEL[data.current_mode] ?? data.current_mode}
+              </span>
+            )}
           </div>
           {data?.last_run && !isRunning && (
             <div className="text-sm text-gray-500">
-              Последний запуск: {fmtDate(data.last_run.finished_at)} · {fmtDuration(data.last_run)}
+              Последний: {fmtDate(data.last_run.finished_at)} · {fmtDuration(data.last_run)}
             </div>
           )}
+
+          {/* Running: «подхватить новое» (dropdown) + cancel */}
           {isRunning && (
-            <button
-              onClick={() => cancel.mutate()}
-              disabled={cancel.isPending}
-              className="ml-auto px-5 py-2 bg-red-100 text-red-700 rounded-lg text-sm hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {cancel.isPending ? 'Отмена...' : '✕ Отменить'}
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <div className="relative">
+                <button
+                  onClick={() => setReloadOpen((o) => !o)}
+                  disabled={busy}
+                  title="Добрать только что включённые конфиги, не останавливая сбор"
+                  className="px-4 py-2 bg-emerald-100 text-emerald-700 rounded-lg text-sm hover:bg-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                >
+                  {reload.isPending ? '...' : '↻ Подхватить новое'}
+                  <span className="text-[10px]">▼</span>
+                </button>
+                {reloadOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setReloadOpen(false)} />
+                    <div className="absolute right-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-20 py-1">
+                      {[
+                        { m: 'keyword' as Mode, t: `Подхватить ключи (${kw})` },
+                        { m: 'filters' as Mode, t: `Подхватить фильтры (${fl})` },
+                        { m: 'all' as Mode, t: 'Подхватить всё' },
+                      ].map((o) => (
+                        <button
+                          key={o.m}
+                          onClick={() => { reload.mutate(o.m); setReloadOpen(false) }}
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-emerald-50"
+                        >
+                          {o.t}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={() => cancel.mutate()}
+                disabled={busy}
+                className="px-4 py-2 bg-red-100 text-red-700 rounded-lg text-sm hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {cancel.isPending ? '...' : '✕ Отменить'}
+              </button>
+            </div>
           )}
         </div>
 
-        {/* Launch mode selector */}
+        {/* Stopped: three launch buttons */}
         {!isRunning && (
           <div>
-            <div className="flex gap-2 mb-4">
-              <button
-                onClick={() => setMode('global')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                  mode === 'global'
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-                }`}
-              >
-                Глобальный
-              </button>
-              <button
-                onClick={() => setMode('filtered')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                  mode === 'filtered'
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-                }`}
-              >
-                С фильтрами
-              </button>
-            </div>
-
-            {mode === 'global' && (
-              <div className="flex items-center gap-4">
-                <p className="text-sm text-gray-500">Парсинг всех активных конфигов без фильтрации.</p>
+            <p className="text-sm text-gray-500 mb-3">
+              Выбери, что запустить. Рестарт не нужен — сбор стартует автоматически за ~15с.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {startButtons.map((b) => (
                 <button
-                  onClick={() => start.mutate()}
-                  disabled={start.isPending}
-                  className="ml-auto px-5 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  key={b.mode}
+                  onClick={() => start.mutate(b.mode)}
+                  disabled={busy || b.count === 0}
+                  className="flex flex-col items-start gap-1 px-4 py-3 rounded-lg border border-gray-200 bg-white hover:border-blue-400 hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-left"
                 >
-                  {start.isPending ? '...' : '▶ Запустить'}
+                  <span className="font-medium text-gray-800">▶ {b.label}</span>
+                  <span className="text-xs text-gray-500">{b.hint}</span>
+                  <span className="mt-1 text-xs font-semibold text-blue-600">{b.count} конфигов</span>
                 </button>
-              </div>
-            )}
-
-            {mode === 'filtered' && (
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Гео (страна)</label>
-                  <div className="relative">
-                    <input
-                      disabled
-                      placeholder="Например: MX, PE, AZ"
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 text-gray-400 cursor-not-allowed pr-28"
-                    />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs bg-gray-200 text-gray-500 px-2 py-0.5 rounded font-medium">
-                      Недоступно
-                    </span>
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Язык объявлений</label>
-                  <div className="relative">
-                    <input
-                      disabled
-                      placeholder="Например: es, en, ru"
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 text-gray-400 cursor-not-allowed pr-28"
-                    />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs bg-gray-200 text-gray-500 px-2 py-0.5 rounded font-medium">
-                      Недоступно
-                    </span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 pt-1">
-                  <p className="text-xs text-gray-400">Фильтрация по гео и языку будет доступна в следующей версии.</p>
-                  <button
-                    disabled
-                    className="ml-auto px-5 py-2 bg-gray-100 text-gray-400 rounded-lg text-sm cursor-not-allowed"
-                  >
-                    ▶ Запустить
-                  </button>
-                </div>
-              </div>
-            )}
+              ))}
+            </div>
           </div>
         )}
       </div>
 
-      {start.isError && (
-        <div className="mb-4 px-4 py-2 bg-red-50 text-red-700 rounded-lg text-sm">
-          {(() => {
-            const e = start.error as { response?: { data?: { detail?: string } }; message?: string } | null
-            return e?.response?.data?.detail ?? e?.message ?? 'Ошибка запуска'
-          })()}
+      {/* Notices / errors */}
+      {notice && (
+        <div className="mb-4 px-4 py-2 bg-blue-50 text-blue-700 rounded-lg text-sm flex items-center gap-2">
+          <span>{notice}</span>
+          <button onClick={() => setNotice(null)} className="ml-auto text-blue-400 hover:text-blue-600">✕</button>
         </div>
       )}
-
+      {start.isError && (
+        <div className="mb-4 px-4 py-2 bg-red-50 text-red-700 rounded-lg text-sm">
+          {errText(start.error, 'Ошибка запуска')}
+        </div>
+      )}
+      {reload.isError && (
+        <div className="mb-4 px-4 py-2 bg-red-50 text-red-700 rounded-lg text-sm">
+          {errText(reload.error, 'Ошибка подхвата')}
+        </div>
+      )}
       {cancel.isError && (
         <div className="mb-4 px-4 py-2 bg-red-50 text-red-700 rounded-lg text-sm">
-          {(() => {
-            const e = cancel.error as { response?: { data?: { detail?: string } }; message?: string } | null
-            return e?.response?.data?.detail ?? e?.message ?? 'Ошибка отмены'
-          })()}
+          {errText(cancel.error, 'Ошибка отмены')}
         </div>
       )}
 
@@ -217,44 +241,44 @@ export default function ParserPage() {
       {(data?.recent_runs.length ?? 0) > 0 && (
         <div className="bg-white rounded-xl shadow overflow-hidden mb-6">
           <div className="px-5 py-3 border-b font-medium text-sm">Последние запуски</div>
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b">
-              <tr>
-                <th className="text-left px-4 py-2">#</th>
-                <th className="text-left px-4 py-2">Статус</th>
-                <th className="text-left px-4 py-2">Начало</th>
-                <th className="text-left px-4 py-2">Конец</th>
-                <th className="text-left px-4 py-2">Длит.</th>
-                <th className="text-left px-4 py-2">Новых</th>
-                <th className="text-left px-4 py-2">Обновл.</th>
-                <th className="text-left px-4 py-2">С медиа</th>
-                <th className="text-left px-4 py-2">Ошибок</th>
-                <th className="text-left px-4 py-2">Пропущено</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data?.recent_runs.map((r) => (
-                <tr key={r.id} className="border-b last:border-0 hover:bg-gray-50">
-                  <td className="px-4 py-2 text-gray-400">{r.id}</td>
-                  <td className="px-4 py-2">
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[r.status] ?? ''}`}>
-                      {r.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2 text-gray-500">{fmtDate(r.started_at)}</td>
-                  <td className="px-4 py-2 text-gray-500">{fmtDate(r.finished_at)}</td>
-                  <td className="px-4 py-2">{fmtDuration(r)}</td>
-                  <td className="px-4 py-2">{r.stats?.new ?? '—'}</td>
-                  <td className="px-4 py-2">{r.stats?.updated ?? '—'}</td>
-                  {/* Media is served as direct FB CDN URLs (not downloaded to S3), so media_ok
-                      is always 0. Show urls_saved — new ads that carry at least one media URL. */}
-                  <td className="px-4 py-2">{r.stats?.urls_saved ?? r.stats?.media_ok ?? '—'}</td>
-                  <td className="px-4 py-2 text-red-500">{r.stats?.errors ?? '—'}</td>
-                  <td className="px-4 py-2 text-gray-400">{r.stats?.skipped_already_reviewed ?? r.stats?.skipped_already_rejected ?? '—'}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b">
+                <tr>
+                  <th className="text-left px-4 py-2">#</th>
+                  <th className="text-left px-4 py-2">Режим</th>
+                  <th className="text-left px-4 py-2">Статус</th>
+                  <th className="text-left px-4 py-2">Начало</th>
+                  <th className="text-left px-4 py-2">Конец</th>
+                  <th className="text-left px-4 py-2">Длит.</th>
+                  <th className="text-left px-4 py-2">Новых</th>
+                  <th className="text-left px-4 py-2">Обновл.</th>
+                  <th className="text-left px-4 py-2">С медиа</th>
+                  <th className="text-left px-4 py-2">Ошибок</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data?.recent_runs.map((r) => (
+                  <tr key={r.id} className="border-b last:border-0 hover:bg-gray-50">
+                    <td className="px-4 py-2 text-gray-400">{r.id}</td>
+                    <td className="px-4 py-2 text-gray-600">{MODE_LABEL[r.mode] ?? r.mode ?? '—'}</td>
+                    <td className="px-4 py-2">
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[r.status] ?? ''}`}>
+                        {r.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-gray-500">{fmtDate(r.started_at)}</td>
+                    <td className="px-4 py-2 text-gray-500">{fmtDate(r.finished_at)}</td>
+                    <td className="px-4 py-2">{fmtDuration(r)}</td>
+                    <td className="px-4 py-2">{r.stats?.new ?? '—'}</td>
+                    <td className="px-4 py-2">{r.stats?.updated ?? '—'}</td>
+                    <td className="px-4 py-2">{r.stats?.urls_saved ?? r.stats?.media_ok ?? '—'}</td>
+                    <td className="px-4 py-2 text-red-500">{r.stats?.errors ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

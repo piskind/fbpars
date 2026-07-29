@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
@@ -28,14 +28,16 @@ def _apply_filters(stmt, Ad, ModerationEntry, Creative, status, country, keyword
             | (Ad.library_id.ilike(like))
             | (Ad.display_url.ilike(like))
         )
-    if has_media is True:
-        stmt = stmt.where(
-            select(Creative.id).where(Creative.ad_id == Ad.id).correlate(Ad).exists()
+    if has_media is not None:
+        # Медиа теперь — прямые FB CDN URL в Ad.image_urls/video_urls/poster_urls (ARRAY),
+        # а НЕ legacy-таблица Creative (она пустая). Раньше фильтр смотрел на Creative →
+        # has_media=true давал 0 всегда. Считаем «есть медиа» = непустой хотя бы один массив.
+        media_exists = or_(
+            func.coalesce(func.cardinality(Ad.image_urls), 0) > 0,
+            func.coalesce(func.cardinality(Ad.video_urls), 0) > 0,
+            func.coalesce(func.cardinality(Ad.poster_urls), 0) > 0,
         )
-    elif has_media is False:
-        stmt = stmt.where(
-            ~select(Creative.id).where(Creative.ad_id == Ad.id).correlate(Ad).exists()
-        )
+        stmt = stmt.where(media_exists if has_media else ~media_exists)
     return stmt
 
 

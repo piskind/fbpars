@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     # that dies (zombie browser / OOM / killed work-horse) then keeps everything committed
     # so far instead of losing all of it.
     commit_batch_size: int = 200
+    # Preload already-saved library_ids for the country into the paginator dedup set (skips
+    # re-upserting them). Set False to force a full deep RE-COLLECT of an already-partially-
+    # collected country: re-scanned cards land as `updated` (=DB writes) so the stall guard
+    # stays alive through the collected prefix and pagination reaches the un-collected tail.
+    preload_seen_ids: bool = True
     # Recycle the browser-fetch Playwright context every N pages during pagination
     # (continuing from the saved cursor), so RSS stays flat (~2 GB) instead of climbing
     # to 6+ GB when a single page is held across hundreds of pagination requests.

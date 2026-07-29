@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { api } from '../api/client'
+import { api, adMedia } from '../api/client'
 import type { ModerationItem } from '../api/client'
 
 export function ModerationPage() {
@@ -9,13 +9,6 @@ export function ModerationPage() {
 
 export function TrashPage() {
   return <ModerationList status="rejected" title="Мусор" />
-}
-
-function mediaUrl(s3Url: string | null): string | null {
-  if (!s3Url) return null
-  const m = s3Url.match(/\/((?:m|ads)\/.+)$/)
-  if (!m) return null
-  return `/api/media/${m[1]}`
 }
 
 type Facets = { countries: string[]; keywords: string[] }
@@ -236,9 +229,9 @@ function Card(props: {
 }) {
   const { item, onApprove, onReject, showActions } = props
   const { ad } = item
-  const firstCreative = ad.creatives.find((c) => c.s3_url) || ad.creatives[0]
-  const url = firstCreative ? mediaUrl(firstCreative.s3_url) : null
-  const isVideo = firstCreative?.media_type?.toLowerCase() === 'video'
+  // Медиа — прямые FB CDN URL (video_urls/image_urls/poster_urls), как в клиентском фиде.
+  // Legacy-таблица creatives пустая, поэтому старый рендер из неё показывал «нет медиа».
+  const { url, poster, isVideo } = adMedia(ad)
 
   const openLink = () => {
     if (ad.link_url) window.open(ad.link_url, '_blank', 'noopener,noreferrer')
@@ -250,6 +243,7 @@ function Card(props: {
         {url && isVideo ? (
           <video
             src={url}
+            poster={poster || undefined}
             controls
             muted
             playsInline
@@ -257,7 +251,7 @@ function Card(props: {
             className="w-full h-full object-cover"
           />
         ) : url ? (
-          <img src={url} alt="" className="w-full h-full object-cover" />
+          <img src={url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
         ) : (
           <div className="text-gray-300 text-sm">нет медиа</div>
         )}

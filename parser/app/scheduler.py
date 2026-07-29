@@ -13,11 +13,17 @@ PARSER_MINUTE = 0
 async def _trigger_parser_run() -> None:
     from app.db import AsyncSessionLocal
     from app.models import ParserRun
+    from sqlalchemy import select
     async with AsyncSessionLocal() as session:
-        run = ParserRun(status="triggered")
+        # Наследуем режим последнего рана, чтобы daily-триггер не сбрасывал выбор
+        # пользователя (напр. keyword) обратно на 'all'. Дефолт — keyword.
+        last_mode = (await session.execute(
+            select(ParserRun.mode).order_by(ParserRun.id.desc()).limit(1)
+        )).scalar()
+        run = ParserRun(status="triggered", mode=last_mode or "keyword")
         session.add(run)
         await session.commit()
-        logger.info(f"[scheduler] Created ParserRun #{run.id} (triggered)")
+        logger.info(f"[scheduler] Created ParserRun #{run.id} (triggered, mode={run.mode})")
 
 
 def _next_daily(hour: int, minute: int) -> datetime.datetime:
