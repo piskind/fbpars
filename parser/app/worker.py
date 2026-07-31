@@ -669,18 +669,21 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
 
 
 def _build_url_for_config(config: ParsingConfig, date_from: date | None, date_to: date | None,
-                          media_override: str | None = None) -> str:
+                          media_override: str | None = None,
+                          platforms_override: list | None = None) -> str:
     """Build the Ad Library URL for one config over one date chunk (shared by run_once & chunk jobs).
 
-    media_override — для media-сегментации (image/video/meme): перекрывает media_type_filter
-    конфига, чтобы один filters-конфиг собирался несколькими параллельными media-срезами.
+    media_override — media-сегментация (image/video/meme); platforms_override — доп. сегментация
+    по платформе (facebook/instagram/...). Оба перекрывают поля конфига, чтобы один filters-конфиг
+    собирался многими параллельными срезами media×platform — так обходится потолок пагинации FB
+    (каждый узкий срез < потолка, суммарно собираем больше).
     """
     ad_type = (config.category or "all") if config.config_type in ("filters", "fanpage") else "all"
     return build_library_url(
         config.country, config.keyword, config.languages,
         active_status=config.active_status or "all",
         media_type=media_override or config.media_type_filter or "all",
-        platforms=config.platforms,
+        platforms=platforms_override or config.platforms,
         date_from=date_from,
         date_to=date_to,
         advertiser=config.advertiser,
@@ -724,6 +727,7 @@ async def process_chunk(
     cursor_start: str | None = None,
     run_id: int | None = None,
     media_type: str | None = None,
+    platforms: list | None = None,
 ) -> dict:
     """Process ONE (config, date-chunk) unit — the RQ job body (Phase 2).
 
@@ -745,8 +749,9 @@ async def process_chunk(
         return {"error": f"config {config_id} not found"}
 
     uploader = MediaUploader()
-    url = _build_url_for_config(config, date_from, date_to, media_override=media_type)
-    period_tag = (f" [{date_from}..{date_to}]" if date_from or date_to else "") + (f" [{media_type}]" if media_type else "")
+    url = _build_url_for_config(config, date_from, date_to, media_override=media_type, platforms_override=platforms)
+    _seg = "".join(f" [{x}]" for x in (media_type, (platforms[0] if platforms else None)) if x)
+    period_tag = (f" [{date_from}..{date_to}]" if date_from or date_to else "") + _seg
     logger.info(f"[#{config_id}]{period_tag} chunk start → {url}")
 
     # Media-сегменты (media_type задан) НЕ трекаем в chunk_progress: у трёх срезов одного
@@ -754,7 +759,7 @@ async def process_chunk(
     # идемпотентен, так что прерывание безопасно (пересбор среза с нуля).
     stats = await _scrape_single_period(
         url, config, uploader, period_tag, cursor_start,
-        date_from=date_from, date_to=date_to, track_chunk=(media_type is None),
+        date_from=date_from, date_to=date_to, track_chunk=(media_type is None and platforms is None),
     )
 
     async with AsyncSessionLocal() as session:
