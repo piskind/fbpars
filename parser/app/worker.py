@@ -670,7 +670,8 @@ async def process_config(config: ParsingConfig, uploader: MediaUploader) -> dict
 
 def _build_url_for_config(config: ParsingConfig, date_from: date | None, date_to: date | None,
                           media_override: str | None = None,
-                          platforms_override: list | None = None) -> str:
+                          platforms_override: list | None = None,
+                          emit_min: bool = False) -> str:
     """Build the Ad Library URL for one config over one date chunk (shared by run_once & chunk jobs).
 
     media_override — media-сегментация (image/video/meme); platforms_override — доп. сегментация
@@ -691,6 +692,7 @@ def _build_url_for_config(config: ParsingConfig, date_from: date | None, date_to
         sort_mode=getattr(config, "sort_mode", "total_impressions") or "total_impressions",
         sort_direction=getattr(config, "sort_direction", "desc") or "desc",
         is_targeted_country=getattr(config, "is_targeted_country", None),
+        emit_min=emit_min,
     )
 
 
@@ -728,6 +730,7 @@ async def process_chunk(
     run_id: int | None = None,
     media_type: str | None = None,
     platforms: list | None = None,
+    emit_min: bool = False,
 ) -> dict:
     """Process ONE (config, date-chunk) unit — the RQ job body (Phase 2).
 
@@ -749,7 +752,8 @@ async def process_chunk(
         return {"error": f"config {config_id} not found"}
 
     uploader = MediaUploader()
-    url = _build_url_for_config(config, date_from, date_to, media_override=media_type, platforms_override=platforms)
+    url = _build_url_for_config(config, date_from, date_to, media_override=media_type,
+                                platforms_override=platforms, emit_min=emit_min)
     _seg = "".join(f" [{x}]" for x in (media_type, (platforms[0] if platforms else None)) if x)
     period_tag = (f" [{date_from}..{date_to}]" if date_from or date_to else "") + _seg
     logger.info(f"[#{config_id}]{period_tag} chunk start → {url}")
@@ -759,7 +763,8 @@ async def process_chunk(
     # идемпотентен, так что прерывание безопасно (пересбор среза с нуля).
     stats = await _scrape_single_period(
         url, config, uploader, period_tag, cursor_start,
-        date_from=date_from, date_to=date_to, track_chunk=(media_type is None and platforms is None),
+        date_from=date_from, date_to=date_to,
+        track_chunk=(media_type is None and platforms is None and not emit_min),
     )
 
     async with AsyncSessionLocal() as session:

@@ -59,17 +59,18 @@ def parse_chunk(
     run_id: int | None = None,
     media_type: str | None = None,
     platforms: list | None = None,
+    emit_min: bool = False,
 ) -> dict:
     """RQ 'parse' queue job: process one (config, date-chunk). Returns the stats dict.
 
-    media_type/platforms — сегменты (media×platform) для параллельного сбора filters-конфига,
-    обход потолка пагинации FB.
+    media_type/platforms/emit_min — сегменты (media×platform×date-окно) для параллельного сбора
+    filters-конфига и обхода потолка пагинации FB.
     """
     from app.worker import process_chunk
     _rotate_ip_on_retry()
     return asyncio.run(
         process_chunk(config_id, _parse_date(date_from), _parse_date(date_to), cursor_start, run_id,
-                      media_type=media_type, platforms=platforms)
+                      media_type=media_type, platforms=platforms, emit_min=emit_min)
     )
 
 

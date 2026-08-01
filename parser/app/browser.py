@@ -192,6 +192,7 @@ def build_library_url(
     sort_mode: str = "total_impressions",
     sort_direction: str = "desc",
     is_targeted_country: bool | None = None,
+    emit_min: bool = False,
 ) -> str:
     from urllib.parse import quote
     # Braille blank U+2800 — invisible keyword that returns broad results
@@ -214,6 +215,13 @@ def build_library_url(
     # start_date[max]=date_to + active_status=all → FB отдаёт ВСЁ запущенное до date_to
     # (вкл. старых-активных), а курсорная пагинация проходит весь набор. date_from по-прежнему
     # используется для чанкования диапазона (см. coordinator._chunks_for), но в URL не идёт.
+    # emit_min=True — для date-сегментации: узкие непересекающиеся окна [min..max] по дате
+    # запуска. Каждое окно лоссовое (недобор), НО непересекающиеся окна дробят набор и
+    # обходят потолок пагинации FB (каждый кусок < потолка). Применять ТОЛЬКО когда широкий
+    # [max]-сбор упёрся в потолок и надо добрать хвост (напр. KZ: FB заявляет 50k, широко
+    # собрали 46.8k). Для обычного сбора emit_min=False (широкое окно, см. коммент выше).
+    if emit_min and date_from is not None:
+        url += f"&start_date%5Bmin%5D={date_from}"
     if date_to is not None:
         url += f"&start_date%5Bmax%5D={date_to}"
     if advertiser:
