@@ -92,6 +92,27 @@ def _dedup(seq: list[str]) -> list[str]:
     return out
 
 
+_RE_SHABLON = _re_shablon = __import__("re").compile(r"\{\{[^{}]*\}\}")
+
+
+def _ne_shablon(v):
+    """Текст или None, если это нерендеренный шаблон вроде «{{product.description}}».
+
+    У карусельных и динамических объявлений верхний snapshot.body содержит
+    плейсхолдер, а настоящий текст лежит в snapshot.cards[].body. Плейсхолдер —
+    непустая строка, поэтому подстановка через `or` не срабатывала никогда:
+    в базу легло 1 053 222 объявления (14%) с «{{product.description}}» вместо
+    текста, а отсев по ключу не видел в них бренда и выбрасывал живую рекламу
+    (по «Adenofrin» в ES так терялась вся выдача точной фразы).
+    """
+    t = _text(v)
+    if not t:
+        return None
+    # Убираем плейсхолдеры: если осмысленного текста не осталось — считаем пустым.
+    ostatok = _RE_SHABLON.sub("", t).strip()
+    return t if ostatok else None
+
+
 def map_graphql_card(node: dict) -> ParsedCard:
     card = ParsedCard()
     card.library_id = str(node.get("ad_archive_id") or node.get("id") or "")
@@ -109,27 +130,42 @@ def map_graphql_card(node: dict) -> ParsedCard:
         except Exception:
             pass
 
+    # end_date — дата окончания показа (0/None у ещё крутящихся).
+    end_ts = node.get("end_date")
+    if isinstance(end_ts, (int, float)) and end_ts > 0:
+        try:
+            card.ended_at = datetime.fromtimestamp(end_ts, tz=timezone.utc)
+        except Exception:
+            pass
+
     # Texts, media, links live inside snapshot.
     snap = node.get("snapshot") or {}
 
     card.page_name = node.get("page_name") or snap.get("page_name") or snap.get("current_page_name")
     card.page_url = snap.get("page_profile_uri")
+    # id берём из ответа напрямую: у FB встречаются обе раскладки, плюс запасной
+    # вариант — числовая ссылка (её разбирает repository._extract_page_id).
+    _pid = node.get("page_id") or snap.get("page_id") or node.get("pageID")
+    card.page_id = str(_pid) if _pid else None
 
-    card.body_text = _text(snap.get("body"))
-    card.title = snap.get("title")
-    card.caption = snap.get("caption")
+    card.body_text = _ne_shablon(snap.get("body"))
+    card.title = _ne_shablon(snap.get("title"))
+    card.caption = _ne_shablon(snap.get("caption"))
     card.cta_text = snap.get("cta_text") or snap.get("cta_type")
     card.link_url = snap.get("link_url")
 
     # Carousel/DCO ads carry per-card media (and often the only texts) in cards[].
     cards = snap.get("cards") or []
-    if cards:
-        c0 = cards[0]
-        card.body_text = card.body_text or _text(c0.get("body"))
-        card.title = card.title or c0.get("title")
-        card.caption = card.caption or c0.get("caption")
-        card.cta_text = card.cta_text or c0.get("cta_text")
-        card.link_url = card.link_url or c0.get("link_url")
+    for _c in cards:
+        # Идём по ВСЕМ карточкам: у карусели текст бывает не в первой, а плейсхолдер
+        # стоит в нескольких подряд. Берём первое непустое и нешаблонное значение.
+        card.body_text = card.body_text or _ne_shablon(_c.get("body"))
+        card.title = card.title or _ne_shablon(_c.get("title"))
+        card.caption = card.caption or _ne_shablon(_c.get("caption"))
+        card.cta_text = card.cta_text or _c.get("cta_text")
+        card.link_url = card.link_url or _c.get("link_url")
+        if card.body_text and card.title and card.link_url:
+            break
 
     # Media lives in cards[] on live data (snapshot.images/videos come back empty
     # even for ads that have media — even single image/video ads use cards[0]).

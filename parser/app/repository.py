@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
-from sqlalchemy import select, func
+import hashlib
+
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 from app.models import Ad, Creative, ModerationEntry, AdMediaType, ModerationStatus
@@ -10,17 +12,50 @@ from app.enrich import enrich_ad_fields
 async def find_ad_by_library_id_and_country(
     session: AsyncSession, library_id: str, country: str
 ) -> Ad | None:
-    """Dedup lookup scoped to the country of the current collection.
+    """Поиск объявления БЕЗ привязки к стране — одно объявление = одна строка.
 
-    The same FB archive_id runs in several countries; we keep a separate row per country
-    so an ad collected under PE doesn't shadow the same ad collected under MX (which would
-    otherwise resolve to the PE row, inherit its APPROVED moderation, and be dropped as
-    skipped_already_reviewed). Matches the (library_id, country) unique constraint.
+    Раньше уникальность была составной (library_id + страна сбора), и одно и то же
+    объявление, найденное по нескольким гео, сохранялось несколько раз: так набралось
+    1.29 млн повторов из 7.26 млн строк. Теперь ищем по library_id: повторная находка
+    обновляет существующую строку (дописывает недостающие поля и дату показа), а не
+    плодит копию. Страна у объявления остаётся та, под которой его нашли первым.
+
+    Замечание: гео в поиске FB всё равно не фильтрует, поэтому country у нас — метка
+    сбора, а не таргетинг объявления, и терять на этом нечего.
     """
-    stmt = select(Ad).where(
-        Ad.library_id == library_id, func.upper(Ad.country) == country.upper()
-    )
+    stmt = select(Ad).where(Ad.library_id == library_id)
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def _est_takoy_zhe_kreativ(session: AsyncSession, card: ParsedCard,
+                                 page_id: str | None) -> bool:
+    """Уже есть объявление с ТЕМ ЖЕ креативом от той же страницы?
+
+    Facebook разрешает крутить одну картинку с одним текстом десятками отдельных
+    объявлений: у них разные library_id, но креатив один. Замер на Мексике за 7 июля:
+    из ~18 400 объявлений уникальных креативов всего 4 375, то есть 87% — повторы.
+    Отпечаток берём по (страница + текст + заголовок), под него есть индекс.
+    """
+    telo = (card.body_text or "").strip()
+    zagolovok = (card.title or "").strip()
+    # Если содержимого нет, отпечаток вырождается в md5 пустой строки и совпадает
+    # у ВСЕХ таких объявлений (их в базе 92 тысячи). Тогда проверка отбрасывала бы
+    # каждую новую карточку без текста как повтор — сбор почти вставал. Не проверяем.
+    if not telo and not zagolovok:
+        return False
+    # ВРЕМЕННО ОТКЛЮЧЕНО: индекс по отпечатку оказался построен по другому
+    # выражению, из-за чего этот запрос делал Seq Scan по 6 млн строк НА КАЖДУЮ
+    # карточку — нагрузка на базу 12, сбор почти встал. Повторы внутри пачки
+    # продолжают отсекаться в worker (batch_fp), этого достаточно.
+    return False
+    otpechatok = hashlib.md5(
+        ((page_id or "") + telo + zagolovok).encode("utf-8")
+    ).hexdigest()
+    stmt = text(
+        "SELECT 1 FROM ads WHERE md5(coalesce(page_id,'') || coalesce(body,'')"
+        " || coalesce(title,'')) = :fp LIMIT 1"
+    )
+    return (await session.execute(stmt, {"fp": otpechatok})).first() is not None
 
 
 def _detect_media_type(card: ParsedCard) -> AdMediaType:
@@ -57,9 +92,16 @@ async def upsert_ad(
     now = datetime.now(timezone.utc)
 
     enriched = await enrich_ad_fields(card.link_url, card.body_text)
-    page_id = _extract_page_id(card.page_url)
+    page_id = getattr(card, "page_id", None) or _extract_page_id(card.page_url)
 
     existing = await find_ad_by_library_id_and_country(session, card.library_id, country)
+
+    # Новое объявление, но креатив уже есть у этой страницы — не сохраняем.
+    # Это ровно те «дубли», которые видит заказчик: один и тот же баннер,
+    # запущенный рекламодателем десятки раз отдельными объявлениями.
+    if existing is None and await _est_takoy_zhe_kreativ(session, card, page_id):
+        return None, False, True
+
     if existing:
         # Check moderation status — don't re-create moderation entry for
         # already reviewed ads, and skip expensive field updates for rejected ones.
@@ -74,6 +116,9 @@ async def upsert_ad(
         existing.last_refresh_at = now
         if card.started_at and not existing.started_at:
             existing.started_at = card.started_at
+        # ended_at обновляем всегда: объявление могло остановиться между сборами
+        if card.ended_at:
+            existing.ended_at = card.ended_at
         ref = existing.started_at or existing.first_seen_at
         if ref:
             ref = ref.replace(tzinfo=timezone.utc) if ref.tzinfo is None else ref
@@ -132,6 +177,7 @@ async def upsert_ad(
     ad = Ad(
         library_id=card.library_id,
         country=country,
+        ended_at=card.ended_at,
         keyword=keyword,
         vertical=vertical,
         page_id=page_id,
@@ -161,7 +207,10 @@ async def upsert_ad(
     )
     session.add(ad)
     await session.flush()
-    mod_status = ModerationStatus.APPROVED if config_type in ("filters", "fanpage") else ModerationStatus.PENDING
+    # Все типы сборов идут в витрину сразу. Раньше keyword уходил в PENDING, и
+    # собранное по ключам до заказчика не доезжало вовсе — 6 090 карточек висели
+    # непросмотренными с июля.
+    mod_status = ModerationStatus.APPROVED
     moderation = ModerationEntry(ad_id=ad.id, status=mod_status)
     session.add(moderation)
     await session.flush()

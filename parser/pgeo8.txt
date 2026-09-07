@@ -1,0 +1,4 @@
+============================================================
+A. US-only ключ 'medicare' + isTargetedCountry=TRUE
+  [KZ/medicare/targeted=True] 120 ads err=None
+      pages: ['MobiHealthNews', 'Geisinger', 'Medicare Beauty', 'Blue Cross NC', 'GoodRx', 'Geisinger', 'InsurMark', 'Geisinger']

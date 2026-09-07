@@ -19,6 +19,10 @@ _SPEND_CPM = float(os.getenv("SPEND_CPM", "12"))
 BATCH_SIZE = 500   # max active ads per daily run; None = unlimited
 GROUP_SIZE = 3     # ads processed in parallel per browser context
 GROUP_SLEEP = 10   # seconds between groups (anti-ban pause)
+# Безбраузерный режим: браузер не открывается, каждый запрос идёт через свой
+# прокси из пула, поэтому ограничения браузерного режима тут излишни.
+GRUPPA_GQL = int(os.getenv("REFRESH_GRUPPA", "24") or 24)
+PAUZA_GQL = float(os.getenv("REFRESH_PAUZA", "1") or 1)
 
 # JS: find the external landing URL on the ?id= page.
 # Works for both active (CTA button present) and inactive (URL may be in data attrs).
@@ -449,6 +453,18 @@ async def _graphql_is_active(session, tokens, ad: Ad) -> bool | None:
 
     for node in nodes:
         if str(node.get("id") or "") == ad.library_id:
+            # Свежие ссылки на медиа: у прежних срок жизни 3-4 дня, после чего
+            # карточка в ленте оставалась без картинки.
+            try:
+                from app.graphql_client import map_graphql_card
+                _kartochka = map_graphql_card(node)
+                ad._svezhee_media = {
+                    "image_urls": list(_kartochka.image_urls or []),
+                    "video_urls": list(_kartochka.video_urls or []),
+                    "poster_urls": list(_kartochka.poster_urls or []),
+                }
+            except Exception as _e:
+                logger.debug(f"[refresh-gql] {ad.library_id}: медиа не разобрано: {_e}")
             return bool(node.get("is_active"))
     # Node not returned by search → most likely gone, but be conservative (unknown).
     return None
@@ -462,13 +478,17 @@ async def _process_group_graphql(
 
     out = []
     async with CurlAsyncSession() as session:
-        for ad in ads:
-            try:
-                is_active = await _graphql_is_active(session, tokens, ad)
-                out.append((ad, is_active, None, None, False))
-            except Exception as e:
-                logger.error(f"[refresh-gql] {ad.library_id}: group error {e}")
+        # Параллельно, а не по очереди: запросы независимы и идут через разные прокси.
+        rezultaty = await asyncio.gather(
+            *[_graphql_is_active(session, tokens, ad) for ad in ads],
+            return_exceptions=True,
+        )
+        for ad, r in zip(ads, rezultaty):
+            if isinstance(r, Exception):
+                logger.error(f"[refresh-gql] {ad.library_id}: ошибка группы {r}")
                 out.append((ad, None, None, None, True))
+            else:
+                out.append((ad, r, None, None, False))
     return out
 
 
@@ -526,7 +546,8 @@ async def refresh_batch(limit: int | None = BATCH_SIZE) -> dict:
     async with AsyncSessionLocal() as session:
         ads = await _get_active_ads(session, limit)
 
-    groups = [ads[i:i + GROUP_SIZE] for i in range(0, len(ads), GROUP_SIZE)]
+    _razmer = GRUPPA_GQL if settings.refresh_mode == "graphql" else GROUP_SIZE
+    groups = [ads[i:i + _razmer] for i in range(0, len(ads), _razmer)]
     use_graphql = settings.refresh_mode == "graphql"
     logger.info(
         f"[refresh] Starting batch of {len(ads)} active ads "
@@ -570,6 +591,18 @@ async def refresh_batch(limit: int | None = BATCH_SIZE) -> dict:
 
                     db_ad.last_refresh_at = now
 
+                    # Свежие ссылки на медиа, если пришли: без них карточка
+                    # старше 3-4 дней показывается пустой.
+                    _sm = getattr(ad, "_svezhee_media", None)
+                    if _sm and any(_sm.values()):
+                        if _sm["image_urls"]:
+                            db_ad.image_urls = _sm["image_urls"]
+                        if _sm["video_urls"]:
+                            db_ad.video_urls = _sm["video_urls"]
+                        if _sm["poster_urls"]:
+                            db_ad.poster_urls = _sm["poster_urls"]
+                        stats["media_obnovleno"] = stats.get("media_obnovleno", 0) + 1
+
                     if is_active is None:
                         stats["unknown"] += 1
                     elif is_active:
@@ -612,19 +645,44 @@ async def refresh_batch(limit: int | None = BATCH_SIZE) -> dict:
                 logger.info("[refresh] Rotating IP")
                 await rotate_ip()
             logger.debug(f"[refresh] group sleep {GROUP_SLEEP}s")
-            await asyncio.sleep(GROUP_SLEEP)
+            await asyncio.sleep(
+                PAUZA_GQL if settings.refresh_mode == "graphql" else GROUP_SLEEP)
 
     logger.info(f"[refresh] Done: {stats}")
     return stats
 
 
+# Порция за один заход и предельная длительность суточного прогона.
+# limit=None грузил все активные объявления разом и убивал процесс по памяти.
+PORCIYA = int(os.getenv("REFRESH_PORCIYA", "2000") or 2000)
+PREDEL_CHASOV = float(os.getenv("REFRESH_PREDEL_CHASOV", "20") or 20)
+
+
 async def run_refresh_once():
-    logger.info(f"[refresh] Daily run started, batch_limit={BATCH_SIZE}")
+    import time as _time
+
+    logger.info(f"[refresh] Суточный прогон: порциями по {PORCIYA}, "
+                f"предел {PREDEL_CHASOV} ч")
+    nachalo = _time.time()
+    itogo = {}
+    porciy = 0
     try:
-        stats = await refresh_batch(limit=None)
-        logger.info(f"[refresh] Daily run complete: {stats}")
+        while True:
+            if _time.time() - nachalo > PREDEL_CHASOV * 3600:
+                logger.warning(f"[refresh] предел времени исчерпан после {porciy} порций")
+                break
+            stats = await refresh_batch(limit=PORCIYA)
+            porciy += 1
+            for k, v in (stats or {}).items():
+                if isinstance(v, int):
+                    itogo[k] = itogo.get(k, 0) + v
+            # Порция вышла неполной — активные объявления кончились.
+            if not stats or stats.get("checked", 0) < PORCIYA:
+                break
+            logger.info(f"[refresh] порция {porciy} готова, всего {itogo}")
+        logger.info(f"[refresh] Суточный прогон завершён: порций {porciy}, {itogo}")
     except Exception as e:
-        logger.error(f"[refresh] Daily run error: {e}")
+        logger.error(f"[refresh] Ошибка суточного прогона: {e}")
         raise
 
 

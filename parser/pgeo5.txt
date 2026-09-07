@@ -1,0 +1,10 @@
+
+============================================================
+US-ONLY ключ: 'medicare'
+  [US/medicare] 120 ads err=None pages=['Carda Health', 'Solace', 'Eli Lilly and Company', 'Solace', 'Dana Loesch']
+  [KZ/medicare] 120 ads err=None pages=['MobiHealthNews', 'Geisinger', 'Medicare Beauty', 'Blue Cross NC', 'GoodRx']
+  KZ/US = 120/120 = 100.0% | пересечение 1
+  >>> ГЕО НЕ ФИЛЬТРУЕТ ❌ (US-only реклама лежит в KZ-выдаче)
+
+============================================================
+US-ONLY ключ: 'obamacare'

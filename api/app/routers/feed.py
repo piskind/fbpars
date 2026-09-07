@@ -1,6 +1,10 @@
 import re
 from typing import Optional, List
-from datetime import datetime
+import os as _os
+from datetime import datetime, timedelta
+import logging
+
+logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, or_, and_, distinct, text, String, Integer, tuple_, cast, case, exists
 from sqlalchemy.orm import selectinload
@@ -18,6 +22,8 @@ from app.models_proxy import (
 )
 from app.schemas import AdOut
 
+
+_FACETS_CACHE: dict = {"at": 0.0, "data": None}
 
 router = APIRouter(prefix="/api/feed", tags=["feed"])
 
@@ -86,12 +92,27 @@ def _is_broad_filter_ad():
     # keyword у широких фильтр-конфигов = NULL, и у их объявлений keyword тоже NULL.
     # Обычное "=" при NULL=NULL даёт NULL (не TRUE) → раньше правило ловило 0.
     # IS NOT DISTINCT FROM — NULL-safe сравнение.
-    return exists().where(
-        ParsingConfig.config_type == "filters",
-        ParsingConfig.country == Ad.country,
-        ParsingConfig.keyword.is_not_distinct_from(Ad.keyword),
+    # Плоские подзапросы вместо коррелированного EXISTS: тот выполнялся для
+    # КАЖДОЙ строки и один держал дашборд на 95 секундах.
+    _bez_klyucha = (
+        select(ParsingConfig.country)
+        .where(ParsingConfig.config_type == "filters", ParsingConfig.keyword.is_(None))
+        .scalar_subquery()
+    )
+    _s_klyuchom = (
+        select(ParsingConfig.country, ParsingConfig.keyword)
+        .where(ParsingConfig.config_type == "filters", ParsingConfig.keyword.is_not(None))
+        .subquery()
+    )
+    return or_(
+        and_(Ad.keyword.is_(None), Ad.country.in_(_bez_klyucha)),
+        tuple_(Ad.country, Ad.keyword).in_(select(_s_klyuchom.c.country, _s_klyuchom.c.keyword)),
     )
 
+
+# Со скольки знаков искать по началу слова. Ниже этого ищем слово целиком:
+# «a:*» совпало бы с миллионами строк и повесило бы счётчик.
+_MIN_DLINA_PREFIKSA = int(_os.getenv("MIN_DLINA_PREFIKSA", "3") or 3)
 
 # Все фильтры /feed в одном месте — используются и списком, и счётчиком.
 def _apply_ad_filters(
@@ -146,9 +167,13 @@ def _apply_ad_filters(
     _sel_countries = countries or ([country] if country else None)
     if _sel_countries:
         _sel_upper = [c.upper() for c in _sel_countries if c]
+        # Все ячейки сбора слиты в ISO-коды (миграция 15.08), поэтому сравниваем
+        # напрямую — так работает индекс ix_ads_country.
         stmt = stmt.where(func.upper(Ad.country).in_(_sel_upper))
     if keyword:
-        stmt = stmt.where(Ad.keyword == keyword)
+        # Без учёта регистра: ключи хранятся как их дал заказчик («NoLimit City»),
+        # а в поиске набирают строчными. Индекс ix_ads_keyword_lower — под lower().
+        stmt = stmt.where(func.lower(Ad.keyword) == keyword.strip().lower())
     if vertical:
         stmt = stmt.where(Ad.vertical == vertical)
         if vertical != "general":
@@ -233,24 +258,53 @@ def _apply_ad_filters(
     if started_from:
         stmt = stmt.where(Ad.started_at >= started_from)
     if started_to:
-        stmt = stmt.where(Ad.started_at <= started_to)
+        # started_to приходит датой (2026-06-01) и парсится в полночь. Сравнение
+        # started_at <= полночь выбрасывает весь этот день: FB отдаёт дату старта
+        # как полночь по тихоокеанскому, т.е. 07:00 UTC. Трактуем верхнюю границу
+        # как «весь указанный день включительно».
+        if (started_to.hour, started_to.minute, started_to.second) == (0, 0, 0):
+            stmt = stmt.where(Ad.started_at < started_to + timedelta(days=1))
+        else:
+            stmt = stmt.where(Ad.started_at <= started_to)
     if last_seen_from:
         stmt = stmt.where(Ad.last_seen_at >= last_seen_from)
     if last_seen_to:
         stmt = stmt.where(Ad.last_seen_at <= last_seen_to)
     if search:
-        fields = [Ad.body, Ad.title, Ad.caption, Ad.page_name, Ad.library_id, Ad.display_url]
-        if search_mode == "broad":
-            # широкий: совпадает любое слово из запроса
-            words = [w for w in search.split() if w]
-            groups = [or_(*[f.ilike(f"%{w}%") for f in fields]) for w in words] or [
-                or_(*[f.ilike(f"%{search}%") for f in fields])
-            ]
-            stmt = stmt.where(or_(*groups))
+        _zapros = search.strip()
+        if _zapros.isdigit():
+            # Одни цифры — это идентификатор объявления, ищем точно по нему.
+            stmt = stmt.where(Ad.library_id == _zapros)
         else:
-            # точный: вся фраза как подстрока
-            like = f"%{search}%"
-            stmt = stmt.where(or_(*[f.ilike(like) for f in fields]))
+            # ВАЖНО: состав и порядок полей обязаны совпадать с индексом
+            # ix_ads_poisk_fts, иначе он не будет использован.
+            _tekst = (
+                func.coalesce(Ad.body, "") + " " + func.coalesce(Ad.title, "")
+                + " " + func.coalesce(Ad.caption, "") + " " + func.coalesce(Ad.page_name, "")
+                + " " + func.coalesce(Ad.display_url, "")
+            )
+            _vektor = func.to_tsvector("simple", _tekst)
+
+            # Разбираем запрос сами: to_tsquery требует готового выражения и падает
+            # на любом спецсимволе, поэтому оставляем только буквы и цифры.
+            _slova = [w for w in re.split(r"[^\w]+", _zapros, flags=re.UNICODE) if w]
+
+            def _s_nachala(slovo: str) -> str:
+                """Слово с меткой «искать по началу». Для огрызков в 1-2 знака
+                метку не ставим: «a:*» совпало бы с миллионами строк."""
+                return f"{slovo}:*" if len(slovo) >= _MIN_DLINA_PREFIKSA else slovo
+
+            if not _slova:
+                # В запросе не осталось ничего, кроме знаков препинания.
+                stmt = stmt.where(text("false"))
+            else:
+                if search_mode == "broad":
+                    # широкий: достаточно любого слова из запроса
+                    _vyrazhenie = " | ".join(_s_nachala(w) for w in _slova)
+                else:
+                    # точный: слова подряд и в том же порядке
+                    _vyrazhenie = " <-> ".join(_s_nachala(w) for w in _slova)
+                stmt = stmt.where(_vektor.op("@@")(func.to_tsquery("simple", _vyrazhenie)))
     # Охват/Спенд — диапазоны. Данные есть ТОЛЬКО у EU-объявлений (reach/spend_estimate),
     # у не-EU они NULL → при этих фильтрах такие объявления не проходят (ожидаемо).
     if reach_min is not None:
@@ -328,6 +382,7 @@ async def list_feed(
     text_any: list[str] | None = Query(None),
     uncategorized: bool | None = Query(None),
     sort: str = Query("newest", regex="^(newest|oldest|days_desc|days_asc)$"),
+    pokazat_dubli: bool = Query(False),
     limit: int = Query(40, le=1000),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
@@ -339,6 +394,10 @@ async def list_feed(
         .where(ModerationEntry.status == ModerationStatus.APPROVED)
         .options(selectinload(Ad.creatives))
     )
+    # Повторы креатива скрыты по умолчанию: один баннер = одна карточка в ленте.
+    # Флаг посчитан заранее, фильтр идёт по частичному индексу ix_ads_ne_dup.
+    if not pokazat_dubli:
+        stmt = stmt.where(Ad.is_dup.is_(False))
 
     stmt = _apply_ad_filters(
         stmt,
@@ -428,13 +487,56 @@ async def list_feed(
         .subquery()
     )
 
+    # Дедуп по phash имеет смысл, только если phash где-то заполнен. Таблица creatives
+    # сейчас пуста → coalesce(phash, ad_id) уникален для каждой строки, DISTINCT ON не
+    # схлопывает НИЧЕГО, но заставляет полностью сортировать выборку на каждый запрос.
+    # На 7 млн строк это и есть основной тормоз ленты. Пропускаем, пока phash не появится.
+    _has_phash = (await session.execute(
+        select(Creative.id).where(Creative.phash.is_not(None)).limit(1)
+    )).first() is not None
     # Финальная выборка с пагинацией.
-    final_stmt = (
-        select(Ad)
-        .join(representatives_subq, Ad.id == representatives_subq.c.ad_id)
-        .options(selectinload(Ad.creatives))
-    )
-    if sort == "newest":
+    if _has_phash:
+        final_stmt = (
+            select(Ad)
+            .join(representatives_subq, Ad.id == representatives_subq.c.ad_id)
+            .options(selectinload(Ad.creatives))
+        )
+    else:
+        # Схлопывание ПОВТОРОВ КРЕАТИВА (один баннер, запущенный десятками
+        # отдельных объявлений) пробовал делать здесь через DISTINCT ON по
+        # отпечатку (страница+текст+заголовок). Замер: 16 с с фильтром по стране
+        # и таймаут без фильтра — откачено. Правильный путь: хранить отпечаток
+        # отдельной колонкой с индексом, а не считать md5 на лету по всей выборке.
+        # Пока повторы отсекаются на СБОРЕ (repository._est_takoy_zhe_kreativ).
+        final_stmt = stmt
+
+    # При поиске отбираем совпадения заранее, иначе планировщик идёт по индексу
+    # сортировки и перечитывает миллионы строк ради сорока подходящих.
+    if search and not _has_phash:
+        _sovpavshie = (
+            stmt.with_only_columns(
+                Ad.id.label("id"),
+                Ad.first_seen_at.label("uvideno"),
+                _DAYS_ACTIVE_EXPR.label("dney"),
+            )
+            .order_by(None)
+            .cte("sovpavshie")
+            .prefix_with("MATERIALIZED")
+        )
+        final_stmt = (
+            select(Ad)
+            .join(_sovpavshie, Ad.id == _sovpavshie.c.id)
+            .options(selectinload(Ad.creatives))
+        )
+        _po = {
+            "newest": _sovpavshie.c.uvideno.desc(),
+            "oldest": _sovpavshie.c.uvideno.asc(),
+            "days_desc": _sovpavshie.c.dney.desc(),
+            "days_asc": _sovpavshie.c.dney.asc(),
+        }.get(sort)
+        if _po is not None:
+            final_stmt = final_stmt.order_by(_po)
+    elif sort == "newest":
         final_stmt = final_stmt.order_by(Ad.first_seen_at.desc())
     elif sort == "oldest":
         final_stmt = final_stmt.order_by(Ad.first_seen_at.asc())
@@ -490,6 +592,51 @@ async def list_feed(
     return items
 
 
+# Счётчик без фильтров для главной: держим в памяти, пересчитываем по таймеру.
+_TOTAL_TTL = int(_os.getenv("FEED_TOTAL_TTL", "300") or 300)
+_TOTAL_KESH: dict = {"znachenie": None, "do": 0.0}
+
+# Имена параметров, которые НЕ являются фильтрами (пагинация, сессия, служебное).
+_NE_FILTRY = {"session", "_", "search_mode", "sort", "limit", "offset"}
+
+
+def _bez_filtrov(mestnye: dict) -> bool:
+    """True, если запрос пришёл без единого фильтра — то есть это главная страница."""
+    for imya, znach in mestnye.items():
+        if imya in _NE_FILTRY or imya.startswith("_"):
+            continue
+        if imya == "pokazat_dubli":
+            # false — это умолчание, а не фильтр; true меняет выборку.
+            if not znach:
+                continue
+            return False
+        if znach is None or znach == [] or znach == "":
+            continue
+        return False
+    return True
+
+
+# Счётчик с фильтрами: США — 2.09 млн строк и 14 секунд честного пересчёта.
+# Держим по ячейке на набор фильтров, не больше _KESH_FILTROV_MAX штук.
+_KESH_FILTROV: dict = {}
+_KESH_FILTROV_MAX = 100
+
+
+def _klyuch_filtrov(mestnye: dict) -> tuple:
+    """Устойчивый ключ кеша из параметров запроса."""
+    chasti = []
+    for imya in sorted(mestnye):
+        if imya in _NE_FILTRY or imya.startswith("_"):
+            continue
+        znach = mestnye[imya]
+        if imya == "pokazat_dubli" and not znach:
+            continue
+        if znach is None or znach == [] or znach == "":
+            continue
+        chasti.append((imya, tuple(znach) if isinstance(znach, list) else znach))
+    return tuple(chasti)
+
+
 @router.get("/count")
 async def feed_count(
     country: str | None = Query(None),
@@ -530,10 +677,14 @@ async def feed_count(
     used_in_ads_min: int | None = Query(None),
     text_any: list[str] | None = Query(None),
     uncategorized: bool | None = Query(None),
+    pokazat_dubli: bool = Query(False),
     session: AsyncSession = Depends(get_session),
     _: ClientUser = Depends(get_current_client),
 ):
-    """Кол-во объявлений после фильтров (с учётом phash-дедупликации)."""
+    """Кол-во объявлений после фильтров (повторы креатива скрыты, как в списке)."""
+    # Снимаем параметры ДО того, как появятся рабочие переменные: иначе проверка
+    # «есть ли фильтры» спотыкается о них и всегда отвечает «есть».
+    _parametry = dict(locals())
     base = (
         select(Ad.id)
         .join(ModerationEntry, ModerationEntry.ad_id == Ad.id)
@@ -555,31 +706,42 @@ async def feed_count(
         eu_country=eu_country, used_in_ads_min=used_in_ads_min, text_any=text_any,
         uncategorized=uncategorized,
     )
+    # Повторы креатива скрыты так же, как в списке ленты, иначе счётчик и список
+    # показывали бы разные числа.
+    if not pokazat_dubli:
+        base = base.where(Ad.is_dup.is_(False))
     filtered = base.subquery()
 
-    first_phash_subq = (
-        select(Creative.ad_id, func.min(Creative.phash).label("phash"))
-        .where(Creative.phash.is_not(None))
-        .group_by(Creative.ad_id)
-        .subquery()
-    )
-    count_stmt = (
-        select(
-            func.count(
-                distinct(
-                    func.coalesce(
-                        first_phash_subq.c.phash, cast(filtered.c.id, String)
-                    )
-                )
-            )
-        )
-        .select_from(
-            filtered.outerjoin(
-                first_phash_subq, filtered.c.id == first_phash_subq.c.ad_id
-            )
-        )
-    )
+    # Дедуп по phash не делаем: таблица creatives пуста (медиа не скачиваем, отдаём
+    # прямые ссылки FB CDN), distinct ничего не схлопывал, но заставлял сортировать
+    # 7.4 млн строк с выгрузкой на диск — счётчик не успевал ответить, и фронт
+    # показывал размер страницы вместо общего числа.
+    count_stmt = select(func.count()).select_from(filtered)
+
+    # Без фильтров это «сколько всего у нас объявлений» — цифра для главной. Честный
+    # пересчёт join'а на 5.9 млн строк занимает 14 секунд, фронт столько не ждёт и
+    # рисует размер страницы. Держим её в памяти и обновляем раз в FEED_TOTAL_TTL.
+    import time as _time
+    _tek = _time.time()
+    _klyuch = _klyuch_filtrov(_parametry)
+
+    # Пустой запрос (главная) держим в отдельной ячейке: её греет старт приложения.
+    if _bez_filtrov(_parametry):
+        if _TOTAL_KESH["do"] > _tek and _TOTAL_KESH["znachenie"] is not None:
+            return {"total": _TOTAL_KESH["znachenie"]}
+        total = (await session.execute(count_stmt)).scalar_one()
+        _TOTAL_KESH["znachenie"] = total
+        _TOTAL_KESH["do"] = _tek + _TOTAL_TTL
+        return {"total": total}
+
+    _yacheyka = _KESH_FILTROV.get(_klyuch)
+    if _yacheyka and _yacheyka[0] > _tek:
+        return {"total": _yacheyka[1]}
+
     total = (await session.execute(count_stmt)).scalar_one()
+    if len(_KESH_FILTROV) >= _KESH_FILTROV_MAX:
+        _KESH_FILTROV.pop(next(iter(_KESH_FILTROV)), None)
+    _KESH_FILTROV[_klyuch] = (_tek + _TOTAL_TTL, total)
     return {"total": total}
 
 
@@ -596,13 +758,22 @@ async def feed_partners(
     return {"partners": list(rows)}
 
 
+# Разбивка по вертикалям: полный проход по одобренным, держим в памяти.
+_VERT_KESH: dict = {"do": 0.0, "dannye": None}
+
+
 @router.get("/vertical-counts")
 async def vertical_counts(
     session: AsyncSession = Depends(get_session),
     _: ClientUser = Depends(get_current_client),
 ):
-    # Считаем ТАК ЖЕ, как верхний счётчик /feed/count — с phash-дедупликацией,
-    # иначе число у вертикали (сырой count) расходится с верхним (дедуплено).
+    # Считаем ТАК ЖЕ, как верхний счётчик /feed/count: обычный count и скрытые
+    # повторы, иначе число у вертикали расходится с верхним.
+    import time as _time
+    _tek = _time.time()
+    if _VERT_KESH["do"] > _tek and _VERT_KESH["dannye"] is not None:
+        return {"counts": _VERT_KESH["dannye"]}
+
     base = (
         select(
             Ad.id,
@@ -613,28 +784,19 @@ async def vertical_counts(
             ).label("vertical"),
         )
         .join(ModerationEntry, ModerationEntry.ad_id == Ad.id)
-        .where(ModerationEntry.status == ModerationStatus.APPROVED)
-        .subquery()
-    )
-    first_phash_subq = (
-        select(Creative.ad_id, func.min(Creative.phash).label("phash"))
-        .where(Creative.phash.is_not(None))
-        .group_by(Creative.ad_id)
+        .where(ModerationEntry.status == ModerationStatus.APPROVED,
+               Ad.is_dup.is_(False))
         .subquery()
     )
     rows = (await session.execute(
-        select(
-            base.c.vertical,
-            func.count(distinct(func.coalesce(
-                first_phash_subq.c.phash, cast(base.c.id, String)
-            ))),
-        )
-        .select_from(base.outerjoin(
-            first_phash_subq, base.c.id == first_phash_subq.c.ad_id
-        ))
+        select(base.c.vertical, func.count())
+        .select_from(base)
         .group_by(base.c.vertical)
     )).all()
-    return {"counts": {(v or "unknown"): c for v, c in rows}}
+    _schet = {(v or "unknown"): c for v, c in rows}
+    _VERT_KESH["dannye"] = _schet
+    _VERT_KESH["do"] = _tek + _TOTAL_TTL
+    return {"counts": _schet}
 
 
 @router.get("/facets")
@@ -642,53 +804,72 @@ async def facets(
     session: AsyncSession = Depends(get_session),
     _: ClientUser = Depends(get_current_client),
 ):
-    base = (
-        select(Ad)
-        .join(ModerationEntry, ModerationEntry.ad_id == Ad.id)
-        .where(ModerationEntry.status == ModerationStatus.APPROVED)
-        .subquery()
-    )
+    """Значения для выпадашек фильтров.
 
-    countries_raw = (await session.execute(
-        select(base.c.country).distinct()
-    )).scalars().all()
-    # Коды стран в БД в разном регистре (pe/PE) — приводим к ЗАГЛАВНЫМ и дедупим.
-    countries = sorted({c.upper() for c in countries_raw if c})
-    keywords = (await session.execute(
-        select(base.c.keyword).distinct().where(base.c.keyword.is_not(None)).order_by(base.c.keyword)
-    )).scalars().all()
-    verticals = (await session.execute(
-        select(base.c.vertical).distinct().where(base.c.vertical.is_not(None)).order_by(base.c.vertical)
-    )).scalars().all()
-    media_types = (await session.execute(
-        select(base.c.media_type).distinct().order_by(base.c.media_type)
-    )).scalars().all()
-    ctas = (await session.execute(
-        select(base.c.cta_text).distinct().where(base.c.cta_text.is_not(None)).order_by(base.c.cta_text)
-    )).scalars().all()
+    Раньше каждый список считался как DISTINCT по ads JOIN moderation_queue без
+    ограничений: на 7.5 млн строк это ~14 секунд НА КАЖДЫЙ из восьми списков, и морда
+    просто не дожидалась — фильтры выглядели пустыми. Теперь два изменения:
+      1) «скачущий» обход по индексу (recursive CTE) — берёт только уникальные значения,
+         не читая таблицу целиком; для колонок с индексом это миллисекунды;
+      2) кеш на 5 минут — набор стран/языков меняется медленно.
+    Join к модерации убран: запись в moderation_queue создаётся на каждое объявление,
+    поэтому на состав списков он не влияет, а стоит полного прохода.
+    """
+    import time as _time
+    now = _time.time()
+    if _FACETS_CACHE["data"] is not None and now - _FACETS_CACHE["at"] < 300:
+        return _FACETS_CACHE["data"]
 
-    languages = (await session.execute(
-        select(base.c.language).distinct().where(base.c.language.is_not(None)).order_by(base.c.language)
-    )).scalars().all()
-    app_stores = (await session.execute(
-        select(base.c.app_store).distinct().where(base.c.app_store.is_not(None)).order_by(base.c.app_store)
-    )).scalars().all()
-    ecom_platforms = (await session.execute(
-        select(base.c.ecom_platform).distinct().where(base.c.ecom_platform.is_not(None)).order_by(base.c.ecom_platform)
-    )).scalars().all()
+    # «Скачущий» обход быстр ТОЛЬКО по колонке с индексом: без него каждый шаг —
+    # полная сортировка 7 млн строк, и эндпоинт зависает целиком. Поэтому каждый
+    # список считаем со своим лимитом времени и по отдельности: медленная колонка
+    # отдаёт пустой список, а не роняет все фильтры разом.
+    _facet_timeout = 4000  # мс
 
-    # platforms — array column, разворачиваем через unnest
-    platforms_rows = (await session.execute(
-        text(
-            "SELECT DISTINCT unnest(a.platforms) AS p "
-            "FROM ads a "
-            "JOIN moderation_queue m ON m.ad_id = a.id "
-            "WHERE m.status = 'APPROVED' AND a.platforms IS NOT NULL "
-            "ORDER BY p"
+    async def _distinct(col: str) -> list:
+        q = text(
+            f"WITH RECURSIVE t AS ("
+            f"  (SELECT {col} AS v FROM ads WHERE {col} IS NOT NULL ORDER BY {col} LIMIT 1)"
+            f"  UNION ALL"
+            f"  SELECT (SELECT {col} FROM ads WHERE {col} > t.v AND {col} IS NOT NULL"
+            f"          ORDER BY {col} LIMIT 1) FROM t WHERE t.v IS NOT NULL"
+            f") SELECT v FROM t WHERE v IS NOT NULL"
         )
-    )).scalars().all()
+        try:
+            await session.execute(text(f"SET LOCAL statement_timeout = {_facet_timeout}"))
+            rows = (await session.execute(q)).scalars().all()
+            return [r for r in rows if r is not None]
+        except Exception as exc:
+            await session.rollback()
+            logger.warning(f"[facets] список {col} пропущен: {type(exc).__name__}")
+            return []
 
-    return {
+    countries = sorted({c.upper() for c in await _distinct("country") if c})
+    keywords = await _distinct("keyword")
+    verticals = await _distinct("vertical")
+    media_types = await _distinct("media_type")
+    ctas = await _distinct("cta_text")
+    languages = await _distinct("language")
+    app_stores = await _distinct("app_store")
+    ecom_platforms = await _distinct("ecom_platform")
+
+    # Тот же лимит времени: без обёртки этот запрос наследует statement_timeout
+    # от предыдущих и роняет весь ответ пятисоткой.
+    try:
+        await session.execute(text(f"SET LOCAL statement_timeout = {_facet_timeout}"))
+        # Значений тут всего несколько (fb/ig/audience_network/messenger), поэтому
+        # разворачивать массивы по всем 7.5 млн строк незачем — берём выборку.
+        platforms_rows = (await session.execute(
+            text("SELECT DISTINCT unnest(platforms) AS p FROM ("
+                 "  SELECT platforms FROM ads WHERE platforms IS NOT NULL LIMIT 50000"
+                 ") s ORDER BY p")
+        )).scalars().all()
+    except Exception as exc:
+        await session.rollback()
+        logger.warning(f"[facets] список platforms пропущен: {type(exc).__name__}")
+        platforms_rows = []
+
+    data = {
         "countries": list(countries),
         "keywords": list(keywords),
         "verticals": list(verticals),
@@ -699,6 +880,9 @@ async def facets(
         "ecom_platforms": list(ecom_platforms),
         "platforms": list(platforms_rows),
     }
+    _FACETS_CACHE["at"] = now
+    _FACETS_CACHE["data"] = data
+    return data
 
 
 @router.get("/{ad_id}", response_model=AdOut)
@@ -793,6 +977,8 @@ async def similar_ads(
         .where(
             Ad.id != ad_id,
             ModerationEntry.status == ModerationStatus.APPROVED,
+            # Повторы креатива не показываем нигде, похожие не исключение.
+            Ad.is_dup.is_(False),
             or_(*conditions),
         )
         .options(selectinload(Ad.creatives))

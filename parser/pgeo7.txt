@@ -1,0 +1,41 @@
+
+============================================================
+[KZ + casino]
+URL: https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=KZ&q=casino&search_type=keyword_unordered&media_type=all&sort_data%5Bmode%
+  ключи variables: ['activeStatus', 'adType', 'bylines', 'collationToken', 'contentLanguages', 'countries', 'cursor', 'excludedIDs', 'first', 'isTargetedCountry', 'location', 'mediaType', 'multiCountryFilterMode', 'pageIDs', 'potentialReachInput', 'publisherPlatforms', 'queryString', 'regions', 'searchType', 'sessionID', 'sortData', 'source', 'startDate', 'v', 'viewAllPageID']
+  --- интересные поля ---
+    activeStatus = "all"
+    adType = "ALL"
+    countries = ["KZ"]
+    isTargetedCountry = false
+    location = null
+    multiCountryFilterMode = null
+    queryString = "casino"
+    regions = null
+    searchType = "keyword_unordered"
+  --- полный variables (обрезан) ---
+   {"activeStatus": "all", "adType": "ALL", "bylines": [], "collationToken": null, "contentLanguages": [], "countries": ["KZ"], "cursor": "AQHS5224HTJ0KrUJ118aHaxUikXXxFRJ2PLo0b7Ai580Lah10DNB7v7vtd2_UNrNFHx6", "excludedIDs": null, "first": 10, "isTargetedCountry": false, "location": null, "mediaType": "all", "multiCountryFilterMode": null, "pageIDs": [], "potentialReachInput": null, "publisherPlatforms": [], "queryString": "casino", "regions": null, "searchType": "keyword_unordered", "sessionID": "077a6f2b-171d-47e9-9acf-ca3b4cd22b60", "sortData": {"direction": "DESCENDING", "mode": "SORT_BY_TOTAL_IMPRESSIONS"}, "source": null, "startDate": null, "v": "5a5a19", "viewAllPageID": "0"}
+
+============================================================
+[US + casino]
+URL: https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&q=casino&search_type=keyword_unordered&media_type=all&sort_data%5Bmode%
+  ключи variables: ['activeStatus', 'adType', 'bylines', 'collationToken', 'contentLanguages', 'countries', 'cursor', 'excludedIDs', 'first', 'isTargetedCountry', 'location', 'mediaType', 'multiCountryFilterMode', 'pageIDs', 'potentialReachInput', 'publisherPlatforms', 'queryString', 'regions', 'searchType', 'sessionID', 'sortData', 'source', 'startDate', 'v', 'viewAllPageID']
+  --- интересные поля ---
+    activeStatus = "all"
+    adType = "ALL"
+    countries = ["US"]
+    isTargetedCountry = false
+    location = null
+    multiCountryFilterMode = null
+    queryString = "casino"
+    regions = null
+    searchType = "keyword_unordered"
+  --- полный variables (обрезан) ---
+   {"activeStatus": "all", "adType": "ALL", "bylines": [], "collationToken": null, "contentLanguages": [], "countries": ["US"], "cursor": "AQHS-5TShYgeXj0dH9S5h0dFQ6rLmbILBnST3tzjW2Q0Uz5g9EzD5BuYxFR_I2Yc7Dn7", "excludedIDs": null, "first": 10, "isTargetedCountry": false, "location": null, "mediaType": "all", "multiCountryFilterMode": null, "pageIDs": [], "potentialReachInput": null, "publisherPlatforms": [], "queryString": "casino", "regions": null, "searchType": "keyword_unordered", "sessionID": "dc95d73c-0316-45b5-98a5-b6c5d24e9257", "sortData": {"direction": "DESCENDING", "mode": "SORT_BY_TOTAL_IMPRESSIONS"}, "source": null, "startDate": null, "v": "5a5a19", "viewAllPageID": "0"}
+
+============================================================
+СРАВНЕНИЕ
+  отличия KZ vs US: {"cursor": ["AQHS5224HTJ0KrUJ118aHaxUikXXxFRJ2PLo0b7Ai580Lah10DNB7v7vtd2_UNrNFHx6", "AQHS-5TShYgeXj0dH9S5h0dFQ6rLmbILBnST3tzjW2Q0Uz5g9EzD5BuYxFR_I2Yc7Dn7"], "sessionID": ["077a6f2b-171d-47e9-9acf-ca3b4cd22b60", "dc95d73c-0316-45b5-98a5-b6c5d24e9257"], "countries": [["KZ"], ["US"]]}
+  >>> переменные различаются — country доезжает; FB сам его игнорирует
+
+ИТОГ7

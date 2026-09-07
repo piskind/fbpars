@@ -1,0 +1,4 @@
+============================================================
+A. is_targeted_country=TRUE
+  [KZ targeted] 158 ads err=None
+      pages: ['Jamul Casino', 'Jackpot Party Casino Community', 'Idle Vegas Resort', 'Idle Vegas Resort', 'GAZOO Racing Global', 'GAZOO Racing Global']

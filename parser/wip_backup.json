@@ -1,0 +1,578 @@
+[
+ {
+  "id": "zk_218_2026-08-21_football-betting_inactive:3c07b1f35a644c5d88fda4bfc8de2dc3",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "football betting",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_football-manager_active:9122b422adab4331822a808b3f7815ad",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "football manager",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fortune-slots_active:4a108a99cbe847d0b401ea41f500ac20",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Fortune Slots",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fortune-wheel_active:86b262c67437407b896dcd8c6b516287",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Fortune Wheel",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_download---play_active:535a246480a548cca9f47fcafe577d65",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Download & play",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_feel-the-thrill_active:8c7096ffe448486ebc53feda3d3da19f",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "feel the thrill",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_football-manager_inactive:9646500158f14952a4d1605d5b5bbae7",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "football manager",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_football-match_active:0cd835acb70e4bed9ec9af07c6c317d1",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "football match",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fortune-hunt_active:63ab63fcd9bf4908bbf1c451af524c19",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Fortune hunt",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fortune-wheel_inactive:f5730afb73774fe6b637f17ab8c215e8",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Fortune Wheel",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fortuneslots_inactive:c57f15c9a2e74c3d8ef76457897570dc",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "FortuneSlots",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_football-match_inactive:a34e3115b35141a7bbb2771d1a3897c9",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "football match",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fortune-slots_inactive:5253713f1d4242f9808354de5583d4ce",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Fortune Slots",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fortune-hunt_inactive:2622f1782ba549f2b20ba3c04fb8674e",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Fortune hunt",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-chips_active:7ebb073f105441dd8f843dd730b6976b",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "free chips",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-game_inactive:f5839daa141945cebd467a0bfe12af9f",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Free game",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-money_inactive:67e1d1b453614a25b7b9e7c301058166",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "free money",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fortunejack_inactive:5f1dfd77a9cf4121a7065d0e86588a4e",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "FortuneJack",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fortuneslots_active:f87528e5b9864afa92f6afd49561c84a",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "FortuneSlots",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-coins_inactive:c80de3fb2fe745dd9fb98dffdeb9df2f",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "free coins",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-rewards_active:098e951f52fd4f1d8e61fc327e6d4e9d",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "free rewards",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fortunejack_active:ffe68326b10f4a59a21fb4c03a1f3746",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "FortuneJack",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-chips_inactive:efacb66fd96f492d98d4f504b20489cd",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "free chips",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-money_active:78fb8a2021904b66a494ed9c67168537",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "free money",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-spin_inactive:12039dc2913f4a9094730c65f393562f",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Free spin",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-coins_active:9642d60cc481426f9580339c1a39cf35",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "free coins",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-game_active:ce9e4492ab104a13b6e85e7ead04e952",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Free game",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-spin_active:f54366cedf3f45a7a50b785754ef9a35",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Free spin",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-spins_active:9afca590bfac477dbaf527d8a34a0ce0",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Free spins",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-spins_inactive:7fa22084f3bc42b2b674f4e19f6d7d68",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Free spins",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-rewards_inactive:54c059719d614cfca2aa266de3a85b9f",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "free rewards",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-spins---fs_inactive:23dee811480641129597a0cc93423925",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "free spins / FS",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fruit-party-2_active:292f0dd167f24365bbae8829752272d9",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Fruit Party 2",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fs_active:ce28b6e1683a44ee87b73190334f264c",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "FS",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-tips_inactive:35843d2c9e204e2da969c27774ea70f1",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "free tips",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fruit-party-2_inactive:87169426100b4cc4b3c278eeb176a73d",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Fruit Party 2",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fs_inactive:6cfb0030c46d43c3912f917ed9021ca5",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "FS",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_full-house_inactive:7363877a31b84d13ab82c7152318da3b",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Full house",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fruit-party_active:83bb91d4fc42475685ea3934d6484fc6",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Fruit Party",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fruit-party_inactive:9f08da9bf12e4650aab4c85bb6b71a27",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Fruit Party",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_fun-game_inactive:6d22adc4bdd5484db9aaa6395d0c96f5",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "fun game",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_gamble-gala_inactive:23f239e9948d41cba5635482f6432890",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Gamble gala",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_free-tips_active:fbc923c0aeab440ea2e3b2846baea5dc",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "free tips",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_gamble-now_active:348234e0f2ae400fb03eeaf3c3c42bdb",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Gamble now",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_gambling_inactive:6a52138c4c3041e5b60cd44dbbe6c022",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "gambling",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_full-house_active:e0d5de07d4494f93832bef70f199197d",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "active",
+   "keyword": "Full house",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_gambling-offers_inactive:5d1069d146e54f7cb54f4ef1949b613c",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Gambling offers",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ },
+ {
+  "id": "zk_218_2026-08-21_gambling-platform_inactive:4c3532ed18f3417a89b245b7ada88c4a",
+  "kwargs": {
+   "config_id": 218,
+   "date_from": "2019-01-01",
+   "date_to": "2026-08-22",
+   "active_status": "inactive",
+   "keyword": "Gambling platform",
+   "only_day": "2026-08-21",
+   "max_ads": 1000000
+  }
+ }
+]

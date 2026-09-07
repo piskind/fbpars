@@ -92,6 +92,8 @@ export type Config = {
   languages: string[] | null
   sort_mode: string
   sort_direction: string
+  /** Разворачивать конфиг в сетку медиа x статус x язык (см. подсказку в форме). */
+  max_collect: boolean
 }
 
 export type Creative = {

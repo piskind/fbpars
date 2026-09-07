@@ -1,3 +1,4 @@
+import os as _os
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
@@ -11,6 +12,11 @@ from app.schemas import ParsingConfigOut, ParsingConfigCreate, ParsingConfigUpda
 
 
 router = APIRouter(prefix="/api/configs", tags=["configs"])
+
+
+def _klyuch_stat(country, keyword) -> tuple:
+    """Ключ сопоставления конфига с объявлениями — без учёта регистра."""
+    return ((country or "").upper(), (keyword or "").lower())
 
 
 def _config_out(cfg: ParsingConfig, ads_count: int = 0, last_parsed_at: datetime | None = None) -> ParsingConfigOut:
@@ -35,12 +41,19 @@ def _config_out(cfg: ParsingConfig, ads_count: int = 0, last_parsed_at: datetime
         is_targeted_country=cfg.is_targeted_country,
         sort_mode=cfg.sort_mode,
         sort_direction=cfg.sort_direction,
+        max_collect=getattr(cfg, "max_collect", False),
         created_at=cfg.created_at,
         updated_at=cfg.updated_at,
         filters_updated_at=cfg.filters_updated_at,
         ads_count=ads_count,
         last_parsed_at=last_parsed_at,
     )
+
+
+# Счётчики объявлений для страницы настроек: полный агрегат по таблице,
+# держим в памяти.
+_STATS_TTL = int(_os.getenv("CONFIGS_STATS_TTL", "300") or 300)
+_STATS_KESH: dict = {"do": 0.0, "dannye": None}
 
 
 @router.get("", response_model=list[ParsingConfigOut])
@@ -51,21 +64,39 @@ async def list_configs(
     cfg_stmt = select(ParsingConfig).order_by(ParsingConfig.id)
     configs = list((await session.execute(cfg_stmt)).scalars().all())
 
-    stats_stmt = (
-        select(
-            Ad.country,
-            Ad.keyword,
-            func.count(Ad.id).label("cnt"),
-            func.max(Ad.last_seen_at).label("last"),
+    # Счётчики объявлений держим в памяти: их пересчёт — полный проход по 7.4 млн
+    # строк (13 с), а сами числа справочные и меняются медленно. Конфиги при этом
+    # всегда свежие, кешируется только статистика.
+    import time as _t
+    _seychas = _t.time()
+    if _STATS_KESH["do"] > _seychas and _STATS_KESH["dannye"] is not None:
+        stats = _STATS_KESH["dannye"]
+    else:
+        stats_stmt = (
+            select(
+                Ad.country,
+                Ad.keyword,
+                func.count(Ad.id).label("cnt"),
+                func.max(Ad.last_seen_at).label("last"),
+            )
+            .group_by(Ad.country, Ad.keyword)
         )
-        .group_by(Ad.country, Ad.keyword)
-    )
-    rows = (await session.execute(stats_stmt)).all()
-    stats = {(r.country, r.keyword): (r.cnt, r.last) for r in rows}
+        rows = (await session.execute(stats_stmt)).all()
+        # Сводим по регистру: объявления пишутся со словом среза, а в конфиге ключ
+        # мог быть введён иначе. Из-за точного совпадения «Uropro/UZ» показывал 0
+        # при 25 собранных — они лежали под «UroPro».
+        stats = {}
+        for r in rows:
+            k = _klyuch_stat(r.country, r.keyword)
+            cnt, last = stats.get(k, (0, None))
+            stats[k] = (cnt + r.cnt,
+                        r.last if last is None or (r.last and r.last > last) else last)
+        _STATS_KESH["dannye"] = stats
+        _STATS_KESH["do"] = _seychas + _STATS_TTL
 
     result = []
     for c in configs:
-        cnt, last = stats.get((c.country, c.keyword), (0, None))
+        cnt, last = stats.get(_klyuch_stat(c.country, c.keyword), (0, None))
         result.append(_config_out(c, ads_count=cnt, last_parsed_at=last))
     return result
 
@@ -96,6 +127,7 @@ async def create_config(
         is_targeted_country=body.is_targeted_country,
         sort_mode=body.sort_mode,
         sort_direction=body.sort_direction,
+        max_collect=body.max_collect,
     )
     session.add(cfg)
     await session.commit()
@@ -125,6 +157,8 @@ async def update_config(
             filters_changed = True
         setattr(cfg, attr, value)
 
+    if body.max_collect is not None:
+        cfg.max_collect = body.max_collect
     if body.keyword is not None:
         _set_filter("keyword", body.keyword)
     if body.country is not None:

@@ -1,0 +1,4 @@
+существующих KZ+KZ2 library_id: 130393
+  sample node keys: ['ad_archive_id', 'ad_id', 'categories', 'collation_count', 'collation_id', 'contains_digital_created_media', 'contains_sensitive_content', 'currency', 'end_date', 'fev_info', 'gated_type', 'has_user_reported', 'hide_data_status', 'id']
+[потенция] собрано=59 новых=58 | накопл.новых=58
+[простатит] собрано=299 новых=265 | накопл.новых=314

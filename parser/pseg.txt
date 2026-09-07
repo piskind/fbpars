@@ -1,0 +1,30 @@
+============================================================
+KZ, срез до 2026-01-30, кап 250 на запрос
+
+-- база --
+  [all/desc] 257 ads err=None
+
+-- 1. media_type --
+  [image] 259 ads err=None
+  [video] 255 ads err=None
+  >>> image vs video: пересечение 0 = 0% -> РЕЖЕТ ✅ (срезы разные)
+
+-- 2. sort_direction --
+  [all/asc] 257 ads err=None
+  >>> desc vs asc: пересечение 257 = 100% -> не режет ❌ (то же самое)
+
+-- 3. active_status --
+  [active] 252 ads err=None
+  [inactive] 256 ads err=None
+  >>> active vs inactive: пересечение 0 = 0% -> РЕЖЕТ ✅ (срезы разные)
+
+-- 4. platform --
+  [facebook] 256 ads err=None
+  [instagram] 256 ads err=None
+  >>> facebook vs instagram: пересечение 217 = 85% -> не режет ❌ (то же самое)
+
+============================================================
+объединение всех срезов: 839 уникальных (база одна = 257)
+выигрыш против одного запроса: x3.3
+
+ИТОГ_SEG

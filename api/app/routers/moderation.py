@@ -1,5 +1,6 @@
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
@@ -123,6 +124,56 @@ async def stats(
     stmt = select(ModerationEntry.status, func.count()).group_by(ModerationEntry.status)
     rows = (await session.execute(stmt)).all()
     return {s.value: n for s, n in rows}
+
+
+class MassovoeIn(BaseModel):
+    """Одно решение на все записи в заданном статусе."""
+    iz_statusa: str = "pending"      # какие записи берём
+    status: str = "approved"         # что им проставить
+    predel: int | None = None        # ограничить число за раз (None = все)
+
+
+@router.post("/bulk")
+async def massovoe_reshenie(
+    data: MassovoeIn,
+    session: AsyncSession = Depends(get_session),
+    current=Depends(get_current_admin),
+):
+    """Проставить решение всем записям в статусе iz_statusa.
+
+    Поштучная кнопка на тысячах карточек неприменима: очередь копилась с июля,
+    потому что сборы по ключам автоматически туда падали.
+    """
+    if data.status not in ("approved", "rejected"):
+        raise HTTPException(status_code=400, detail="status: approved или rejected")
+    if data.iz_statusa not in ("pending", "approved", "rejected"):
+        raise HTTPException(status_code=400, detail="iz_statusa: pending, approved или rejected")
+
+    otbor = select(ModerationEntry.id).where(
+        ModerationEntry.status == ModerationStatus(data.iz_statusa)
+    )
+    if data.predel:
+        otbor = otbor.limit(data.predel)
+    ids = list((await session.execute(otbor)).scalars().all())
+    if not ids:
+        return {"obrabotano": 0, "status": data.status}
+
+    # Порциями: одним запросом на десятки тысяч строк упирались в таймаут.
+    obrabotano = 0
+    PORCIYA = 2000
+    teper = datetime.now(timezone.utc)
+    for i in range(0, len(ids), PORCIYA):
+        kusok = ids[i:i + PORCIYA]
+        await session.execute(
+            update(ModerationEntry)
+            .where(ModerationEntry.id.in_(kusok))
+            .values(status=ModerationStatus(data.status),
+                    reviewed_by=current.id,
+                    reviewed_at=teper)
+        )
+        await session.commit()
+        obrabotano += len(kusok)
+    return {"obrabotano": obrabotano, "status": data.status}
 
 
 @router.post("/{entry_id}", response_model=ModerationItemOut)

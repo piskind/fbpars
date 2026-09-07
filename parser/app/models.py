@@ -61,6 +61,10 @@ class ParsingConfig(Base):
     is_targeted_country: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     sort_mode: Mapped[str] = mapped_column(String(32), default="total_impressions")
     sort_direction: Mapped[str] = mapped_column(String(8), default="desc")
+    # Максимальный сбор: координатор разворачивает конфиг в сетку
+    # media x active_status x язык вместо одного среза (см. coordinator.enqueue_run).
+    max_collect: Mapped[bool] = mapped_column(Boolean, default=False)
+
     last_parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -136,11 +140,17 @@ class Ad(Base):
 
     lead_form: Mapped[bool] = mapped_column(Boolean, default=False)
     language: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    # Отпечаток креатива (page_id + текст + имя медиафайла): один баннер рекламодатель
+    # запускает десятками объявлений с разными library_id, и дедуп по library_id их не
+    # ловит. Считается в воркере при сохранении, индекс ix_ads_content_fp.
+    content_fp: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    is_dup: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     app_store: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     ecom_platform: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     days_active: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -163,7 +173,9 @@ class Ad(Base):
     __table_args__ = (
         Index("ix_ads_eu_countries_gin", "eu_countries", postgresql_using="gin"),
         # One row per ad per country of collection (see library_id note above).
-        UniqueConstraint("library_id", "country", name="uq_ad_library_country"),
+        # Одно объявление = одна строка (раньше уникальность была составной,
+        # с привязкой к стране сбора, и одно крео дублировалось по гео).
+        UniqueConstraint("library_id", name="uq_ads_library_id"),
     )
 
 
@@ -245,6 +257,10 @@ class ParserRun(Base):
     # «Подхватить новое»: админка ставит целевой тип ('keyword'|'filters'|'all') → координатор
     # до-enqueue'ит новые активные конфиги ЭТОГО типа на лету и сбрасывает в NULL.
     reload_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Адресный прогон: список id конфигов через запятую. Если задан — координатор
+    # берёт ТОЛЬКО их, а не все активные. Нужно, чтобы «собрать 5 мая по США» не
+    # тянуло за собой все остальные гео.
+    only_configs: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # Sentinels so a chunk with an open date bound still has a NOT NULL primary key
@@ -272,6 +288,12 @@ class ChunkProgress(Base):
     )
     date_from: Mapped[date] = mapped_column(Date, primary_key=True)
     date_to: Mapped[date] = mapped_column(Date, primary_key=True)
+    # Медиа-срез — часть ключа: у image/video/meme одного дня совпадают config и даты.
+    # Без этого три среза коллизили в PK, из-за чего резюме приходилось отключать, и
+    # тяжёлый срез после любого падения начинался с первой страницы. Пусто = не-медиа чанк.
+    media_type: Mapped[str] = mapped_column(
+        String(16), primary_key=True, nullable=False, server_default="", default=""
+    )
 
     last_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
     collected_count: Mapped[int] = mapped_column(Integer, default=0)

@@ -47,6 +47,9 @@ class ParsedCard:
     library_id: str | None = None
     is_active: bool = False
     started_at: datetime | None = None
+    # Дата окончания показа. FB отдаёт её в ноде рядом со start_date; без неё
+    # нельзя посчитать, крутилось ли объявление в конкретный день.
+    ended_at: datetime | None = None
     days_active: int = 0
     page_name: str | None = None
     title: str | None = None
@@ -55,6 +58,8 @@ class ParsedCard:
     cta_text: str | None = None
     link_url: str | None = None
     page_url: str | None = None
+    # id рекламодателя из ответа FB; ссылка часто именная, из неё его не достать
+    page_id: str | None = None
     display_url: str | None = None
     platforms: list[str] = field(default_factory=list)
     lead_form: bool = False

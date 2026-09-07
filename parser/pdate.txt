@@ -1,0 +1,26 @@
+
+============================================================
+[БЕЗ ДАТ]
+URL: https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=KZ&q=%E2%A0%80&search_type=keyword_unordered&media_type=all&sort_data%5Bmode%5D=total_impressions&sort_data%5Bdirection%5D=desc
+  startDate  = null
+  activeStatus = "all"
+  countries  = ["KZ"]
+  [date-like] startDate = null
+
+============================================================
+[ТОЛЬКО max=2026-01-15]
+URL: https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=KZ&q=%E2%A0%80&search_type=keyword_unordered&media_type=all&sort_data%5Bmode%5D=total_impressions&sort_data%5Bdirection%5D=desc&start_date%5Bmax%5D=2026-01-15
+  startDate  = {"max": "2026-01-15", "min": null}
+  activeStatus = "all"
+  countries  = ["KZ"]
+  [date-like] startDate = {"max": "2026-01-15", "min": null}
+
+============================================================
+[ОКНО min=max=2026-01-15]
+URL: https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=KZ&q=%E2%A0%80&search_type=keyword_unordered&media_type=all&sort_data%5Bmode%5D=total_impressions&sort_data%5Bdirection%5D=desc&start_date%5Bmin%5D=2026-01-15&start_date%5Bmax%5D=2026-01-15
+  startDate  = {"max": null, "min": null}
+  activeStatus = "all"
+  countries  = ["KZ"]
+  [date-like] startDate = {"max": null, "min": null}
+
+ИТОГ_DATE

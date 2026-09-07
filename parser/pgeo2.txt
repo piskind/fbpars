@@ -1,0 +1,12 @@
+
+============================================================
+ключ = 'casino'
+  KZ: 207 ads (err=None)
+  US: 202 ads (err=None)
+  KZ pages: ['Jamul Casino', 'Jackpot Party Casino Community', 'Idle Vegas Resort', 'Idle Vegas Resort', 'GAZOO Racing Global', 'GAZOO Racing Global']
+  US pages: ['Jamul Casino', 'Hilton', 'Mighty Fu Casino', 'Hilton', 'Bruno Reels Casino', 'Jackpot Party Casino Community']
+  пересечение: 85 = 42.1% от меньшего набора
+  >>> ГЕО НЕ ФИЛЬТРУЕТ (наборы совпадают)
+
+============================================================
+ключ = 'collagen'

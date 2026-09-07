@@ -61,6 +61,9 @@ class ParsingConfig(Base):
     is_targeted_country: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     sort_mode: Mapped[str] = mapped_column(String(32), default="total_impressions")
     sort_direction: Mapped[str] = mapped_column(String(8), default="desc")
+    # Максимальный сбор: координатор разворачивает конфиг в сетку
+    # media x active_status x язык вместо одного среза.
+    max_collect: Mapped[bool] = mapped_column(Boolean, default=False)
     last_parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -106,6 +109,10 @@ class Ad(Base):
     # Not globally unique: one row per (library_id, country) — see uq_ad_library_country
     # below. Mirrors parser/app/models.py.
     library_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Повтор креатива: один баннер, запущенный десятками отдельных объявлений.
+    # Считается на сборе, помечается миграцией dubli_migraciya.py.
+    content_fp: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    is_dup: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     country: Mapped[str] = mapped_column(String(8), index=True)
     keyword: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
@@ -237,6 +244,10 @@ class ParserRun(Base):
     mode: Mapped[str] = mapped_column(String(16), default="all", server_default="all")
     # «Подхватить новое»: целевой тип ('keyword'|'filters'|'all'); координатор обрабатывает и сбрасывает в NULL.
     reload_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Адресный прогон: список id конфигов через запятую. Если задан — координатор
+    # берёт ТОЛЬКО их, а не все активные. Нужно, чтобы «собрать 5 мая по США» не
+    # тянуло за собой все остальные гео.
+    only_configs: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Proxy(Base):

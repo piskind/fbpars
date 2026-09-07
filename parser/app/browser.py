@@ -1,4 +1,5 @@
 import asyncio
+import os
 import json
 import random
 import time
@@ -17,6 +18,9 @@ _BROWSER_SEMAPHORE = asyncio.Semaphore(1)
 # Token capture is short-lived (open → grab tokens → close), so we allow a small pool
 # of concurrent Chromium instances just for that, independent of the heavy path above.
 _TOKEN_SEMAPHORE = asyncio.Semaphore(max(1, settings.token_browser_concurrency))
+# Потолок на один канал захвата токенов (сек). При challenge лестница
+# таймаутов давала 12+ минут молчания — это дороже, чем бросить срез.
+CAPTURE_TIMEOUT = int(os.getenv("TOKEN_CAPTURE_TIMEOUT", "100") or 100)
 
 # Resource types blocked to keep the browser context light (~100 MB instead of ~2.5 GB).
 # We only need the DOM + GraphQL traffic; images/video/CSS/fonts are pure overhead here.
@@ -69,6 +73,7 @@ USER_AGENT = (
 async def browser_context(
     block_resources: bool = False,
     semaphore: asyncio.Semaphore | None = None,
+    proxy_server: str | None = None,
 ):
     """Launch a locked-down Chromium context.
 
@@ -79,13 +84,14 @@ async def browser_context(
     """
     from app.proxy import worker_gateway  # local import avoids a module-load cycle
     sem = semaphore or _BROWSER_SEMAPHORE
+    # proxy_server задан вызывающим (напр. token capture пробует a-poster пул как ОСНОВУ,
+    # с fallback на gost) — иначе дефолт gost (worker_gateway), как раньше.
+    _proxy = proxy_server or worker_gateway()
     async with sem:
         async with async_playwright() as pw:
             browser: Browser = await pw.chromium.launch(
                 headless=settings.headless,
-                # Same exit channel as this worker's curl path (worker_gateway) so token
-                # capture and pagination share one IP; single-channel setups are unchanged.
-                proxy={"server": worker_gateway()},
+                proxy=None if _proxy == "direct" else {"server": _proxy},
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
@@ -123,8 +129,8 @@ async def browser_context(
 async def goto_with_challenge_retry(
     page,
     url: str,
-    max_attempts: int = 4,
-    base_wait: int = 6,
+    max_attempts: int = 2,
+    base_wait: int = 5,
 ) -> bool:
     """
     Navigate to url, handling FB's __rd_verify anti-bot challenge.
@@ -135,7 +141,7 @@ async def goto_with_challenge_retry(
     Strategy: wait for that auto-reload, re-check; if still stuck, force a fresh goto.
     """
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
     except Exception as e:
         logger.warning(f"goto_with_challenge_retry: network error on initial goto: {e}")
         return False
@@ -166,7 +172,7 @@ async def goto_with_challenge_retry(
         if attempt < max_attempts:
             logger.warning("Still challenged — forcing fresh goto")
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 html = await page.content()
                 if "__rd_verify" not in html:
                     logger.info(f"Challenge cleared after fresh goto (attempt {attempt})")
@@ -193,14 +199,23 @@ def build_library_url(
     sort_direction: str = "desc",
     is_targeted_country: bool | None = None,
     emit_min: bool = False,
+    search_type: str = "keyword_unordered",
 ) -> str:
     from urllib.parse import quote
+    # Storage-метка с цифрой (напр. "KZ2") — это отдельный namespace в БД для параллельного
+    # эксперимента; для FB-запроса маппим на реальный ISO-код (буквы): KZ2 → KZ.
+    # Метка ячейки -> код страны ISO. Метка нужна нам для разделения ячеек в базе
+    # (US5, KZ50101, usaJUNE), а FB понимает только двухбуквенный код. Раньше
+    # отбрасывались лишь не-буквы, поэтому буквенная метка уходила в запрос целиком
+    # и FB возвращал пустоту — ячейка собрала бы ноль и это было бы незаметно.
+    _letters = "".join(c for c in (country or "") if c.isalpha())
+    country = (_letters[:2].upper() if len(_letters) >= 2 else country)
     # Braille blank U+2800 — invisible keyword that returns broad results
     q = quote(keyword) if keyword else "%E2%A0%80"
     url = (
         "https://www.facebook.com/ads/library/"
         f"?active_status={active_status}&ad_type={ad_type}&country={country}"
-        f"&q={q}&search_type=keyword_unordered&media_type={media_type}"
+        f"&q={q}&search_type={search_type}&media_type={media_type}"
         f"&sort_data%5Bmode%5D={sort_mode}&sort_data%5Bdirection%5D={sort_direction}"
     )
     if is_targeted_country is not None:
@@ -294,6 +309,10 @@ async def extract_session_tokens(url: str) -> dict:
     """
     captured: dict = {}
     async with browser_context() as context:
+        # Куки аккаунта кладём ДО перехода на страницу — иначе первый запрос уйдёт
+        # разлогином и сессия будет не та, которую хотим измерить.
+        if cookies:
+            await context.add_cookies(cookies)
         page = await context.new_page()
         any_gql_event, pagination_event = await _setup_token_capture(page, captured)
         await _load_and_scroll(page, url, pagination_event)
@@ -307,15 +326,66 @@ async def extract_session_tokens(url: str) -> dict:
     return captured
 
 
-async def capture_session_tokens(url: str) -> SessionTokens:
-    """Phase 1 token capture: open a light browser, grab the pagination tokens, close.
-
-    Blocks images/media/CSS/fonts, fires the first AdLibrarySearchPaginationQuery,
-    captures cookies + form template, then closes the browser immediately. The returned
-    SessionTokens drives browser-less pagination in graphql_paginator.
+async def capture_session_tokens(url: str, cookies: list | None = None) -> SessionTokens:
+    """Token capture с выбором прокси: ОСНОВА — a-poster пул (residential, ~1100 IP, не душит
+    один канал как мобильный gost при многих воркерах), FALLBACK — мобильный gost при
+    'page load failed'. Пул через один порт = один exit IP на всю browser-сессию (sticky).
     """
+    from app.proxy import get_proxy_url, worker_gateway
+    # ОСНОВА токенов — мобильный gost (чище для browser page-load; a-poster residential в
+    # браузере часто даёт 'page load failed'). FALLBACK — a-poster пул, чтобы при перегрузке
+    # одного gost-канала на многих воркерах джоба всё же взяла токен, а не упала.
+    pool_proxy = None
+    try:
+        pool_proxy = await get_proxy_url()
+    except Exception:
+        pool_proxy = None
+    # ОСНОВА — прямое подключение (server IP): FB Ad Library публичный, серверный IP берёт
+    # токен без прокси-overhead и не жжёт мобильный gost. FALLBACK — gost (мобильный), затем
+    # a-poster, если server IP словит бан/challenge под нагрузкой.
+    # Порядок каналов: мобильный первым, прямое последним. Серверный IP за неделю
+    # работы FB залил проверками __rd_verify — браузер на них застревал, воркер стоял
+    # без страниц по 12 минут, сторож снимал по 8 штук за цикл, темп упал в семь раз.
+    # Мобильный трафик FB принимает спокойнее. Прямое оставляем запасным: оно быстрее,
+    # когда мобильный канал занят.
+    attempts: list[tuple[str, str]] = [("gost", worker_gateway())]
+    if pool_proxy:
+        attempts.append(("a-poster", pool_proxy))
+    attempts.append(("direct", "direct"))
+    last_exc: Exception | None = None
+    for idx, (label, proxy) in enumerate(attempts):
+        try:
+            # Потолок на канал: при challenge лестница таймаутов внутри _capture_impl
+            # растягивалась на минуты, и воркер всё это время молчал. Дешевле признать
+            # канал негодным и перейти к следующему.
+            return await asyncio.wait_for(_capture_impl(url, proxy, cookies),
+                                          timeout=CAPTURE_TIMEOUT)
+        except asyncio.TimeoutError:
+            last_exc = RuntimeError(f"[tokens] {label}: превышен потолок {CAPTURE_TIMEOUT}s")
+            if idx < len(attempts) - 1:
+                logger.warning(f"[tokens] {label} не уложился в {CAPTURE_TIMEOUT}s — "
+                               f"пробую {attempts[idx + 1][0]}")
+                continue
+            raise last_exc
+        except RuntimeError as e:
+            last_exc = e
+            has_next = idx < len(attempts) - 1
+            # 'page load failed' = прокси-проблема (канал перегружен/недоступен) → пробуем
+            # следующий прокси. Прочие ошибки (no pagination и т.п.) — не про прокси, raise.
+            if "page load failed" in str(e) and has_next:
+                nxt = attempts[idx + 1][0]
+                logger.warning(f"[tokens] {label} capture fail — fallback на {nxt}")
+                continue
+            raise
+    raise last_exc  # все каналы не смогли
+
+
+async def _capture_impl(url: str, proxy_server: str,
+                        cookies: list | None = None) -> SessionTokens:
+    """Phase 1 token capture через заданный proxy_server: открыть лёгкий браузер, взять токены,
+    закрыть. Blocks images/media/CSS/fonts, ловит первый AdLibrarySearchPaginationQuery."""
     captured: dict = {}
-    async with browser_context(block_resources=True, semaphore=_TOKEN_SEMAPHORE) as context:
+    async with browser_context(block_resources=True, semaphore=_TOKEN_SEMAPHORE, proxy_server=proxy_server) as context:
         page = await context.new_page()
         any_gql_event, pagination_event = await _setup_token_capture(page, captured)
         await _load_and_scroll(page, url, pagination_event)
@@ -539,7 +609,15 @@ async def _capture_pagination_context(page, url: str) -> dict:
     try:
         await asyncio.wait_for(pagination_event.wait(), timeout=20.0)
     except asyncio.TimeoutError:
-        raise RuntimeError(f"[fetch] no AdLibrarySearchPaginationQuery fired at {url}")
+        # FB не дал пагинацию: либо результатов мало (все уместились на первой
+        # странице и курсора нет), либо их нет вовсе. Это НЕ сбой — на этот случай
+        # есть DOM-fallback. Раньше отсюда летел RuntimeError, он попадал в общий
+        # except и срез падал насовсем: #133 HairEx PE (одно объявление) валился
+        # каждым прогоном 314/316/317. Сигналим тем же исключением, что и curl-путь.
+        from app.graphql_paginator import EmptyNoPagination
+        raise EmptyNoPagination(
+            f"[fetch] no AdLibrarySearchPaginationQuery fired at {url}"
+        ) from None
 
     if not captured.get("base_form_data"):
         raise RuntimeError("[fetch] pagination fired but base_form_data not captured")

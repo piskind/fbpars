@@ -59,7 +59,15 @@ def parse_chunk(
     run_id: int | None = None,
     media_type: str | None = None,
     platforms: list | None = None,
+    languages: list | None = None,
+    sort_direction: str | None = None,
+    ad_type: str | None = None,
+    active_status: str | None = None,
+    keyword: str | None = None,
     emit_min: bool = False,
+    max_ads: int | None = None,
+    only_day: str | None = None,
+    search_type: str = "keyword_unordered",
 ) -> dict:
     """RQ 'parse' queue job: process one (config, date-chunk). Returns the stats dict.
 
@@ -70,7 +78,11 @@ def parse_chunk(
     _rotate_ip_on_retry()
     return asyncio.run(
         process_chunk(config_id, _parse_date(date_from), _parse_date(date_to), cursor_start, run_id,
-                      media_type=media_type, platforms=platforms, emit_min=emit_min)
+                      media_type=media_type, platforms=platforms, languages=languages,
+                      sort_direction=sort_direction, ad_type=ad_type,
+                      active_status=active_status, keyword=keyword, emit_min=emit_min,
+                      max_ads=max_ads, only_day=_parse_date(only_day),
+                      search_type=search_type)
     )
 
 

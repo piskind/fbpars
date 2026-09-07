@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import os
 from loguru import logger
 
 from app.refresh_worker import run_refresh_once
@@ -8,6 +9,11 @@ REFRESH_HOUR = 3
 REFRESH_MINUTE = 0
 PARSER_HOUR = 4
 PARSER_MINUTE = 0
+
+# Дневной парсер-триггер можно выключить, не трогая 03:00-refresh (они жили в одном
+# процессе, и раньше «остановить дневные джобы» означало убить контейнер целиком,
+# т.е. заодно и клиентский refresh). DAILY_PARSER_TRIGGER=off в .env — выключен.
+DAILY_PARSER_TRIGGER = os.getenv("DAILY_PARSER_TRIGGER", "on").strip().lower()
 
 
 async def _trigger_parser_run() -> None:
@@ -64,7 +70,12 @@ async def _parser_loop() -> None:
 
 
 async def main():
-    await asyncio.gather(_refresh_loop(), _parser_loop())
+    loops = [_refresh_loop()]
+    if DAILY_PARSER_TRIGGER in ("off", "0", "false", "no"):
+        logger.warning("[scheduler] daily parser trigger DISABLED (DAILY_PARSER_TRIGGER=off)")
+    else:
+        loops.append(_parser_loop())
+    await asyncio.gather(*loops)
 
 
 if __name__ == "__main__":

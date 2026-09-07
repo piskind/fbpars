@@ -1,0 +1,6 @@
+карточек: 40; ошибка: None
+схлопнутых: 7
+ключи узла: ad_archive_id, ad_id, categories, collation_count, collation_id, contains_digital_created_media, contains_sensitive_content, currency, end_date, fev_info, gated_type, has_user_reported, hide_data_status, id, impressions_with_index, is_aaa_eligible, is_active, menu_items, page_id, page_is_deleted, page_name, publisher_platform, reach_estimate, regional_regulation_data, report_count, snapshot, spend, start_date, state_media_run_label, targeted_or_reached_countries, total_active_time
+collation_count=2
+  collation_count = 2
+  collation_id = 1906144203424898

@@ -48,6 +48,8 @@ class ParsingConfigIn(BaseModel):
     is_targeted_country: bool | None = None
     sort_mode: str = "total_impressions"
     sort_direction: str = "desc"
+    # Разворачивать конфиг в сетку media x active_status x язык (см. coordinator).
+    max_collect: bool = False
 
     @field_validator("config_type")
     @classmethod
@@ -94,6 +96,7 @@ class ParsingConfigUpdate(BaseModel):
     is_targeted_country: bool | None = None
     sort_mode: str | None = None
     sort_direction: str | None = None
+    max_collect: bool | None = None
 
     @field_validator("config_type")
     @classmethod
@@ -148,6 +151,8 @@ class ParsingConfigOut(BaseModel):
     is_targeted_country: bool | None = None
     sort_mode: str = "total_impressions"
     sort_direction: str = "desc"
+    # Разворачивать конфиг в сетку media x active_status x язык (см. coordinator).
+    max_collect: bool = False
     created_at: datetime
     updated_at: datetime
     filters_updated_at: datetime | None = None

@@ -17,6 +17,8 @@ add_ad_library_country_unique.py
 add_sort_fields.py
 add_config_filter_audit.py
 add_chunk_stats.py
+add_fb_schetchik.py
+add_slice_run_id.py
 "
 
 for f in $MIGRATIONS; do

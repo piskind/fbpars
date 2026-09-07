@@ -1,0 +1,45 @@
+2026-08-04 13:01:51.406 | INFO     | app.proxy:get_provider:277 - [proxy] provider = PoolProvider (mode=pool)
+2026-08-04 13:01:52.031 | INFO     | app.proxy:_ensure_loaded:245 - [proxy] pool loaded: 15000 IP(s)
+2026-08-04 13:01:52.525 | WARNING  | app.browser:goto_with_challenge_retry:155 - __rd_verify challenge (attempt 1/4) — waiting 6s for auto-reload
+2026-08-04 13:01:58.623 | INFO     | app.browser:goto_with_challenge_retry:166 - Challenge cleared after 1 wait(s)
+2026-08-04 13:02:03.675 | INFO     | app.browser:_capture_impl:393 - [tokens] captured session (doc_id=24922295957467452, form_fields=28, has_lsd=True)
+2026-08-04 13:02:03.675 | INFO     | app.graphql_paginator:paginate:541 - [paginate] session tokens ready (pages so far=0)
+2026-08-04 13:02:29.506 | WARNING  | app.graphql_paginator:_paginate_curl:332 - [curl] page=1 transport error: Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first for more details. (streak=1)
+2026-08-04 13:02:33.064 | WARNING  | app.graphql_paginator:_paginate_curl:340 - [curl] page=1 rate limit 1675004 (streak=2)
+2026-08-04 13:02:33.064 | WARNING  | app.proxy:report_rate_limited:264 - [proxy] IP cooled down 300s: http://185.243.218.108:21002
+2026-08-04 13:02:33.496 | WARNING  | app.graphql_paginator:_paginate_curl:332 - [curl] page=1 transport error: Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first for more details. (streak=3)
+2026-08-04 13:03:00.331 | WARNING  | app.graphql_paginator:_paginate_curl:332 - [curl] page=1 transport error: Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first for more details. (streak=4)
+2026-08-04 13:03:05.577 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=1 fetched_new=8 fetched_total=8 has_next=True
+2026-08-04 13:03:09.912 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=2 fetched_new=10 fetched_total=18 has_next=True
+2026-08-04 13:03:15.009 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=3 fetched_new=10 fetched_total=28 has_next=True
+2026-08-04 13:03:19.474 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=4 fetched_new=10 fetched_total=38 has_next=True
+2026-08-04 13:03:25.173 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=5 fetched_new=10 fetched_total=48 has_next=True
+2026-08-04 13:03:29.558 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=6 fetched_new=10 fetched_total=58 has_next=True
+2026-08-04 13:03:35.622 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=7 fetched_new=10 fetched_total=68 has_next=True
+2026-08-04 13:03:49.063 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=8 fetched_new=10 fetched_total=78 has_next=True
+2026-08-04 13:03:54.949 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=9 fetched_new=10 fetched_total=88 has_next=True
+2026-08-04 13:04:00.370 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=10 fetched_new=10 fetched_total=98 has_next=True
+2026-08-04 13:04:06.163 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=11 fetched_new=10 fetched_total=108 has_next=True
+2026-08-04 13:04:33.532 | WARNING  | app.graphql_paginator:_paginate_curl:332 - [curl] page=12 transport error: Failed to perform, curl: (56) Connection closed abruptly. See https://curl.se/libcurl/c/libcurl-errors.html first for more details. (streak=1)
+2026-08-04 13:05:04.539 | WARNING  | app.graphql_paginator:_paginate_curl:332 - [curl] page=12 transport error: Failed to perform, curl: (28) Connection closed abruptly. See https://curl.se/libcurl/c/libcurl-errors.html first for more details. (streak=2)
+2026-08-04 13:05:08.436 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=12 fetched_new=10 fetched_total=118 has_next=True
+2026-08-04 13:05:14.129 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=13 fetched_new=10 fetched_total=128 has_next=True
+2026-08-04 13:05:15.164 | WARNING  | app.graphql_paginator:paginate:616 - [paginate] stopped by max_ads cap (120) — FB may have more data (128 ads over 13 pages, mode=auto)
+2026-08-04 13:05:27.600 | WARNING  | app.browser:goto_with_challenge_retry:155 - __rd_verify challenge (attempt 1/4) — waiting 6s for auto-reload
+2026-08-04 13:05:33.685 | INFO     | app.browser:goto_with_challenge_retry:166 - Challenge cleared after 1 wait(s)
+2026-08-04 13:05:38.739 | INFO     | app.browser:_capture_impl:393 - [tokens] captured session (doc_id=24922295957467452, form_fields=28, has_lsd=True)
+2026-08-04 13:05:38.739 | INFO     | app.graphql_paginator:paginate:541 - [paginate] session tokens ready (pages so far=0)
+2026-08-04 13:05:42.965 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=1 fetched_new=10 fetched_total=10 has_next=True
+2026-08-04 13:05:48.504 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=2 fetched_new=9 fetched_total=19 has_next=True
+2026-08-04 13:05:53.949 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=3 fetched_new=9 fetched_total=28 has_next=True
+2026-08-04 13:06:00.155 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=4 fetched_new=10 fetched_total=38 has_next=True
+2026-08-04 13:06:05.850 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=5 fetched_new=9 fetched_total=47 has_next=True
+2026-08-04 13:06:10.523 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=6 fetched_new=10 fetched_total=57 has_next=True
+2026-08-04 13:06:15.151 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=7 fetched_new=10 fetched_total=67 has_next=True
+2026-08-04 13:06:29.812 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=8 fetched_new=10 fetched_total=77 has_next=True
+2026-08-04 13:06:34.586 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=9 fetched_new=10 fetched_total=87 has_next=True
+2026-08-04 13:06:40.631 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=10 fetched_new=10 fetched_total=97 has_next=True
+2026-08-04 13:06:50.733 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=11 fetched_new=10 fetched_total=107 has_next=True
+2026-08-04 13:06:56.316 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=12 fetched_new=9 fetched_total=116 has_next=True
+2026-08-04 13:07:01.711 | INFO     | app.graphql_paginator:_paginate_curl:367 - [curl] page=13 fetched_new=10 fetched_total=126 has_next=True
+2026-08-04 13:07:03.032 | WARNING  | app.graphql_paginator:paginate:616 - [paginate] stopped by max_ads cap (120) — FB may have more data (126 ads over 13 pages, mode=auto)

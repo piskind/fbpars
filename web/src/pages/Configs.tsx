@@ -47,8 +47,16 @@ function configTypeLabel(t: string): string {
   return t
 }
 
+const MAX_COLLECT_HINT =
+  'Парсер разложит конфиг на сетку срезов: 3 типа медиа × 2 статуса (активные и неактивные) × 24 языка. ' +
+  'Facebook обрезает ответ на КАЖДЫЙ набор параметров, поэтому один широкий запрос упирается в потолок, ' +
+  'а много узких срезов достают каждый свой кусок — пересечения отсеиваются автоматически. ' +
+  'Замер на США за январь: обычный сбор дал 173 тыс., сетка — втрое больше. ' +
+  'Минус один: сбор идёт дольше и грузит прокси, поэтому включай для гео, где важен объём.'
+
 function filterLines(c: Config): string[] {
   const lines: string[] = []
+  if (c.max_collect) lines.push('Максимальный сбор: сетка медиа × статус × язык')
   if (c.languages?.length) lines.push(`Язык: ${c.languages.join(', ')}`)
   if (c.advertiser) lines.push(`Рекламодатель: ${c.advertiser}`)
   if (c.platforms?.length) lines.push(`Платформы: ${c.platforms.join(', ')}`)
@@ -121,6 +129,7 @@ function EditModal({ config, onClose }: { config: Config; onClose: () => void })
   const [eAutoDate, setEAutoDate] = useState(config.auto_date_from_last_parse ?? false)
   const [eSortMode, setESortMode] = useState(config.sort_mode || 'total_impressions')
   const [eSortDirection, setESortDirection] = useState(config.sort_direction || 'desc')
+  const [eMaxCollect, setEMaxCollect] = useState(config.max_collect ?? false)
   const [eFiltersOpen, setEFiltersOpen] = useState(false)
 
   const togglePlatform = (p: string) =>
@@ -151,6 +160,7 @@ function EditModal({ config, onClose }: { config: Config; onClose: () => void })
         payload.date_from = eDateFrom || null
         payload.auto_date_from_last_parse = eAutoDate
         payload.date_to = eAutoDate ? null : (eDateTo || null)
+        payload.max_collect = eMaxCollect
       }
       await api.patch(`/configs/${config.id}`, payload)
     },
@@ -293,11 +303,21 @@ function EditModal({ config, onClose }: { config: Config; onClose: () => void })
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Статус</label>
-                  <select value={eActiveStatus} onChange={(e) => setEActiveStatus(e.target.value)} className={IC}>
+                  <select value={eActiveStatus} onChange={(e) => setEActiveStatus(e.target.value)} disabled={eMaxCollect} className={`${IC} disabled:opacity-40`}>
                     <option value="all">Все и неактивные</option>
                     <option value="active">Активные</option>
                     <option value="inactive">Неактивные</option>
                   </select>
+                </div>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input type="checkbox" checked={eMaxCollect} onChange={(e) => setEMaxCollect(e.target.checked)} className="rounded" />
+                    максимальный сбор
+                    <span
+                      title={MAX_COLLECT_HINT}
+                      className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 text-gray-500 text-xs cursor-help select-none"
+                    >?</span>
+                  </label>
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Показы с</label>
@@ -479,6 +499,7 @@ export default function ConfigsPage() {
   const [fAutoDate, setFAutoDate] = useState(false)
   const [fSortMode, setFSortMode] = useState('total_impressions')
   const [fSortDirection, setFSortDirection] = useState('desc')
+  const [fMaxCollect, setFMaxCollect] = useState(true)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [bulkOpen, setBulkOpen] = useState(false)
 
@@ -503,6 +524,7 @@ export default function ConfigsPage() {
       payload.date_from = fDateFrom || null
       payload.auto_date_from_last_parse = fAutoDate
       if (!fAutoDate && fDateTo) payload.date_to = fDateTo
+      payload.max_collect = fMaxCollect
       await api.post('/configs', payload)
     },
     onSuccess: () => {
@@ -722,11 +744,21 @@ export default function ConfigsPage() {
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Статус</label>
-                  <select value={fActiveStatus} onChange={(e) => setFActiveStatus(e.target.value)} className={IC}>
+                  <select value={fActiveStatus} onChange={(e) => setFActiveStatus(e.target.value)} disabled={fMaxCollect} className={`${IC} disabled:opacity-40`}>
                     <option value="all">Все и неактивные</option>
                     <option value="active">Активные</option>
                     <option value="inactive">Неактивные</option>
                   </select>
+                </div>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input type="checkbox" checked={fMaxCollect} onChange={(e) => setFMaxCollect(e.target.checked)} className="rounded" />
+                    максимальный сбор
+                    <span
+                      title={MAX_COLLECT_HINT}
+                      className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 text-gray-500 text-xs cursor-help select-none"
+                    >?</span>
+                  </label>
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Показы с</label>

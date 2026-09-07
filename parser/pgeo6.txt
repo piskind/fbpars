@@ -1,0 +1,15 @@
+============================================================
+BROWSE: KZ vs US
+  [browse KZ] 258 ads err=None
+      pages: ['Booking.com', 'Booking.com', 'Booking.com', 'Booking.com', 'Teleios U - Bible Videos', 'Booking.com', 'Booking.com', 'Why China', 'China Box', 'Why China']
+  [browse US] 258 ads err=None
+      pages: ['Meesho', 'Meesho', 'Meesho', 'Teleios U - Bible Videos', 'InfinitePay', 'Grainger', 'Dompet Dhuafa', 'Casas Bahia', 'Booking.com', 'Flipkart']
+
+  пересечение browse KZ∩US: 97 = 37.6%
+  >>> browse гео: НЕ фильтрует ❌
+
+  US-only маркеры в browse-KZ: 0 -> []
+  .kz-ссылок в browse-KZ: 0/226 -> []
+  .kz-ссылок в browse-US (контроль): 0/220
+
+ИТОГ6

@@ -1,0 +1,10 @@
+services:
+  parser-worker:
+    deploy:
+      resources:
+        limits:
+          memory: 6144m
+  postgres:
+    # /dev/shm по умолчанию 64 МБ — параллельным запросам на таблице в 27 ГБ этого
+    # не хватает, они падают с DiskFullError (could not resize shared memory segment).
+    shm_size: 1gb

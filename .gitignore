@@ -41,3 +41,18 @@ node_modules/
 .claude/
 .claude.json
 CLAUDE.md
+
+# Backup snapshots (timestamped, superseded by git history from here on)
+*.bak
+*.bak.*
+*.bak2*
+
+# Live Facebook session / runtime state (secrets, not source)
+parser/fb_state.json
+.giga_prev
+.giga_state
+.tg_offset
+.watchn
+
+# Volatile proxy pool dump (15k+ lines, not source)
+proxy_new.txt

@@ -1,0 +1,8 @@
+  [US/простатит] err EmptyNoPagination: 
+
+ключ='простатит'
+  KZ собрал: 297 | US собрал: 0
+  пересечение KZ∩US: 0 (0% от KZ)
+  примеры page_name KZ: ['Whieda123', 'On clinic', 'On clinic', 'Quat-all.kz', 'On clinic', 'Клиника Сиендай']
+  примеры page_name US: []
+  >>> ГЕО РАБОТАЕТ: наборы KZ и US разные (страна фильтрует)

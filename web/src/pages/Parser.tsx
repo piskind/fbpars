@@ -15,6 +15,77 @@ type ParserRun = {
   log_tail: string | null
 }
 
+type OtchetKonfig = {
+  config_id: number
+  keyword: string | null
+  country: string
+  tip: string
+  setka: boolean
+  srezov: number
+  srezov_s_vydachey: number
+  kartochek: number
+  novyh: number
+  sekund: number
+  vsego_v_baze: number
+  verdikt: string
+  fb_schetchik: number | null
+  fb_schetchik_at: string | null
+}
+
+type OtchetProgona = {
+  run_id: number
+  status: string
+  mode: string
+  nachat: string
+  zakonchen: string
+  srezov_v_plane: number | null
+  srezov_sdelano: number | null
+  vypolneno_procentov: number | null
+  itogo: {
+    konfigov: number
+    srezov: number
+    kartochek: number
+    novyh: number
+    pusto_u_fb: number
+    podozritelnyh: number
+  }
+  konfigi: OtchetKonfig[]
+}
+
+type WordStats = {
+  za_dney: number
+  top_slova: { slovo: string; kreo: number; yazykov: number }[]
+  slabye_slova: { slovo: string; kreo: number }[]
+  po_yazykam: { yazyk: string; kreo: number; slov: number }[]
+}
+
+type SliceEvent = {
+  kogda: string
+  geo: string | null
+  den: string | null
+  slovo: string | null
+  media: string | null
+  status: string | null
+  novyh: number
+  vsego: number
+  sekund: number
+}
+
+type LiveStats = {
+  progon: { id: number; status: string; mode: string; nachat: string } | null
+  zalito_za_chas: number
+  zalito_za_sutki: number
+  po_geo: { country: string; za_sutki: number }[]
+  celi: {
+    config_id: number
+    country: string
+    day: string
+    vsego_v_baze: number
+    za_etot_progon: number
+    full: boolean
+  }[]
+}
+
 type ParserStatus = {
   running: boolean
   current_mode: Mode | null
@@ -84,12 +155,69 @@ export default function ParserPage() {
     refetchInterval: data?.running ? 5000 : false,
   })
 
+  const { data: live } = useQuery({
+    queryKey: ['parser-live'],
+    queryFn: async () => (await api.get<LiveStats>('/parser/live')).data,
+    refetchInterval: 30000,
+  })
+
+  const { data: words } = useQuery({
+    queryKey: ['parser-words'],
+    queryFn: async () => (await api.get<WordStats>('/parser/words')).data,
+    refetchInterval: 120000,
+  })
+
+  const { data: slices } = useQuery({
+    queryKey: ['parser-slices'],
+    queryFn: async () => (await api.get<SliceEvent[]>('/parser/slices?limit=25')).data,
+    refetchInterval: 5000,
+  })
+
+  // Сводка по прогону: какой конфиг что собрал и где ноль подозрительный.
+  // По умолчанию — последний прогон.
+  const [otchetRun, setOtchetRun] = useState<number | null>(null)
+  // last_run в /status — это последний ЗАВЕРШЁННЫЙ прогон (done/failed), а отмена
+  // для глубоких прогонов дело обычное. Без запасного варианта сводка просто
+  // не показывалась: выбранного прогона нет — запрос выключен — блок пустой.
+  const vybranyRun = otchetRun ?? data?.last_run?.id ?? data?.recent_runs?.[0]?.id ?? null
+  const { data: otchet, isFetching: otchetIdet } = useQuery({
+    queryKey: ['parser-otchet', vybranyRun],
+    queryFn: async () =>
+      (await api.get<OtchetProgona>(`/parser/otchet/${vybranyRun}`)).data,
+    enabled: vybranyRun != null,
+    refetchInterval: data?.running ? 15000 : false,
+  })
+
+  const [dayOpen, setDayOpen] = useState(false)
+  const [dayCountries, setDayCountries] = useState('')
+  const [dayDate, setDayDate] = useState('')
+  const [dayDepth, setDayDepth] = useState<'quick' | 'full'>('quick')
+
+  const startDay = useMutation({
+    mutationFn: async () =>
+      (await api.post('/parser/start-day', {
+        countries: dayCountries.split(',').map((s) => s.trim()).filter(Boolean),
+        day: dayDate || null,
+        depth: dayDepth,
+      })).data,
+    onSuccess: (res: { strany: unknown; celevoy_den: string; glubina: string }) => {
+      setDayOpen(false)
+      setNotice(`Запущено: ${JSON.stringify(res.strany)} · ${res.celevoy_den} · ${res.glubina === 'full' ? 'полный' : 'проба'}`)
+      qc.invalidateQueries({ queryKey: ['parser-status'] })
+      qc.invalidateQueries({ queryKey: ['parser-live'] })
+    },
+    onError: (e) => setNotice(errText(e, 'Не удалось запустить')),
+  })
+
   const start = useMutation({
     mutationFn: async (mode: Mode) => (await api.post('/parser/start', { mode })).data,
     onSuccess: (_res, mode) => {
       setNotice(`Запуск «${MODE_LABEL[mode]}» — подхватится за ~15с`)
       qc.invalidateQueries({ queryKey: ['parser-status'] })
     },
+    // Без onError отказ сервера (например 409 «уже запущен») проходил молча —
+    // кнопка выглядела нерабочей, хотя причина была понятной.
+    onError: (e) => setNotice(errText(e, 'Не удалось запустить')),
   })
 
   const reload = useMutation({
@@ -98,6 +226,7 @@ export default function ParserPage() {
       setNotice(`Подхватываю новое (${MODE_LABEL[mode]}) — до ~10с`)
       qc.invalidateQueries({ queryKey: ['parser-status'] })
     },
+    onError: (e) => setNotice(errText(e, 'Не удалось подхватить')),
   })
 
   const cancel = useMutation({
@@ -106,6 +235,7 @@ export default function ParserPage() {
       setNotice(null)
       qc.invalidateQueries({ queryKey: ['parser-status'] })
     },
+    onError: (e) => setNotice(errText(e, 'Не удалось остановить')),
   })
 
   const isRunning = data?.running ?? false
@@ -121,7 +251,15 @@ export default function ParserPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">Парсер</h1>
+      <div className="flex items-center gap-3 mb-6">
+        <h1 className="text-2xl font-bold">Парсер</h1>
+        <button
+          onClick={() => setDayOpen(true)}
+          className="ml-auto px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
+        >
+          Запустить сбор…
+        </button>
+      </div>
 
       {/* Status / control card */}
       <div className="bg-white rounded-xl shadow p-5 mb-6">
@@ -282,6 +420,300 @@ export default function ParserPage() {
         </div>
       )}
 
+      {/* Сводка по прогону: что собрано и что требует внимания */}
+      {otchet && (
+        <div className="bg-white rounded-xl shadow overflow-hidden mb-6">
+          <div className="px-5 py-3 border-b flex items-center gap-3 flex-wrap">
+            <span className="font-medium">Сводка по прогону #{otchet.run_id}</span>
+            {/* Статус словами: «cancelled» читается как авария, хотя чаще это
+                осознанная остановка на почти выполненном плане. */}
+            <span className="text-xs text-gray-400">
+              {otchet.status === 'cancelled'
+                ? (otchet.vypolneno_procentov != null
+                    ? `остановлен вручную · план выполнен на ${otchet.vypolneno_procentov}%`
+                    : 'остановлен вручную')
+                : otchet.status === 'done'
+                  ? 'завершён полностью'
+                  : otchet.status}
+            </span>
+            {otchet.srezov_v_plane != null && (
+              <span className="text-xs text-gray-400">
+                срезов {otchet.srezov_sdelano} из {otchet.srezov_v_plane}
+              </span>
+            )}
+            {otchetIdet && <span className="text-xs text-gray-400">обновляю…</span>}
+            <select
+              className="ml-auto text-sm border rounded px-2 py-1"
+              value={vybranyRun ?? ''}
+              onChange={(e) => setOtchetRun(Number(e.target.value))}
+            >
+              {data?.recent_runs.map((r) => (
+                <option key={r.id} value={r.id}>
+                  #{r.id} · {MODE_LABEL[r.mode] ?? r.mode} · {r.status}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="px-5 py-3 flex flex-wrap gap-6 text-sm border-b bg-gray-50">
+            <div><span className="text-gray-500">конфигов</span> <b>{otchet.itogo.konfigov}</b></div>
+            <div><span className="text-gray-500">срезов</span> <b>{otchet.itogo.srezov}</b></div>
+            <div><span className="text-gray-500">карточек от FB</span> <b>{otchet.itogo.kartochek.toLocaleString('ru')}</b></div>
+            <div><span className="text-gray-500">новых</span> <b>{otchet.itogo.novyh.toLocaleString('ru')}</b></div>
+            <div><span className="text-gray-500">пусто у FB</span> <b>{otchet.itogo.pusto_u_fb}</b></div>
+            <div>
+              <span className="text-gray-500">подозрительных нулей</span>{' '}
+              <b className={otchet.itogo.podozritelnyh > 0 ? 'text-red-600' : 'text-green-600'}>
+                {otchet.itogo.podozritelnyh}
+              </b>
+            </div>
+          </div>
+
+          <div className="px-5 py-2 text-xs text-gray-500 border-b">
+            «Показывает FB» — счётчик со страницы Ad Library. Он считает совпадения
+            по подстроке со стеммингом, а не объявления бренда: по «ProstaMen» это
+            3 300 карточек про польское слово «prosta», настоящих объявлений бренда
+            около полусотни. Сравнивать эту колонку с «В базе» напрямую нельзя.
+          </div>
+
+          {otchet.itogo.podozritelnyh > 0 && (
+            <div className="px-5 py-2 text-sm bg-red-50 text-red-700 border-b">
+              Ноль карточек при том, что объявления по ключу в базе есть — вероятно, FB
+              придушил адрес. Такие срезы закладку не получают, следующий прогон возьмёт их заново.
+            </div>
+          )}
+
+          <div className="max-h-96 overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr className="text-left text-gray-500 text-xs">
+                  <th className="px-4 py-2">Ключ</th>
+                  <th>Гео</th>
+                  <th className="text-right">Срезов</th>
+                  <th className="text-right">Карточек</th>
+                  <th className="text-right">Новых</th>
+                  <th className="text-right">В базе</th>
+                  <th className="text-right" title="Сколько результатов показывает сам FB. Это совпадения по подстроке со стеммингом, а не объявления бренда: по «ProstaMen» FB даёт 3 300 — это польское слово «prosta».">
+                    Показывает FB
+                  </th>
+                  <th className="px-3">Вердикт</th>
+                </tr>
+              </thead>
+              <tbody>
+                {otchet.konfigi.map((k) => {
+                  const trevoga = k.verdikt === 'подозрительный ноль'
+                  return (
+                    <tr key={k.config_id} className={`border-b last:border-0 ${trevoga ? 'bg-red-50' : 'hover:bg-gray-50'}`}>
+                      <td className="px-4 py-2">
+                        {k.keyword || <span className="text-gray-400">по фильтрам</span>}
+                        {k.setka && <span className="ml-2 text-xs text-blue-600">сетка</span>}
+                      </td>
+                      <td className="text-gray-600">{k.country}</td>
+                      <td className="text-right">{k.srezov}</td>
+                      <td className="text-right">{k.kartochek.toLocaleString('ru')}</td>
+                      <td className="text-right">{k.novyh.toLocaleString('ru')}</td>
+                      <td className="text-right text-gray-500">{k.vsego_v_baze.toLocaleString('ru')}</td>
+                      <td className="text-right text-gray-400" title={k.fb_schetchik_at ? `снято ${k.fb_schetchik_at}` : 'ещё не снимали'}>
+                        {k.fb_schetchik == null ? '—' : `~${k.fb_schetchik.toLocaleString('ru')}`}
+                      </td>
+                      <td className={`px-3 ${trevoga ? 'text-red-700 font-medium' : 'text-gray-500'}`}>
+                        {k.verdikt}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Живой лог срезов */}
+      {slices && slices.length > 0 && (
+        <div className="bg-white rounded-xl shadow overflow-hidden mb-6">
+          <div className="px-5 py-3 border-b flex items-center gap-2">
+            <span className="font-medium">Срезы в реальном времени</span>
+            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="text-xs text-gray-400 ml-auto">обновление каждые 5 с</span>
+          </div>
+          <div className="max-h-80 overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr className="text-left text-gray-500 text-xs">
+                  <th className="px-4 py-2">Время</th>
+                  <th>Гео</th>
+                  <th>День</th>
+                  <th>Слово</th>
+                  <th>Медиа</th>
+                  <th>Статус</th>
+                  <th className="text-right">Новых</th>
+                  <th className="text-right">Получено</th>
+                  <th className="text-right pr-4">Сек</th>
+                </tr>
+              </thead>
+              <tbody>
+                {slices.map((s, i) => (
+                  <tr key={i} className="border-t hover:bg-gray-50">
+                    <td className="px-4 py-1.5 text-gray-400 text-xs whitespace-nowrap">
+                      {new Date(s.kogda).toLocaleTimeString('ru', {
+                        hour: '2-digit', minute: '2-digit', second: '2-digit',
+                      })}
+                    </td>
+                    <td className="font-medium">{s.geo ?? '—'}</td>
+                    <td className="text-gray-500">{s.den ?? '—'}</td>
+                    <td className="font-mono text-xs">{s.slovo ?? '—'}</td>
+                    <td className="text-gray-500 text-xs">{s.media ?? 'все'}</td>
+                    <td className="text-gray-500 text-xs">{s.status ?? '—'}</td>
+                    <td className={`text-right font-medium ${s.novyh > 0 ? 'text-green-600' : 'text-gray-300'}`}>
+                      {s.novyh}
+                    </td>
+                    <td className="text-right text-gray-400">{s.vsego}</td>
+                    <td className="text-right pr-4 text-gray-400">{s.sekund}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Живая картина сбора: считается по БД, а не по «ранам» */}
+      {live && (
+        <div className="bg-white rounded-xl shadow p-5 mb-6">
+          <div className="font-medium mb-3">Что собирается сейчас</div>
+          <div className="flex gap-6 mb-4 text-sm">
+            <div>
+              <span className="text-gray-500">залито за час:</span>{' '}
+              <b>{live.zalito_za_chas.toLocaleString('ru')}</b>
+            </div>
+            <div>
+              <span className="text-gray-500">за сутки:</span>{' '}
+              <b>{live.zalito_za_sutki.toLocaleString('ru')}</b>
+            </div>
+          </div>
+
+          {live.progon && (
+            <div className="text-xs text-gray-500 mb-3">
+              Последний прогон #{live.progon.id} · {live.progon.status} · запущен{' '}
+              {fmtDate(live.progon.nachat)}
+            </div>
+          )}
+
+          {live.celi.length > 0 && (
+            <div className="mb-4">
+              <div className="text-xs text-gray-500 mb-1">Сбор за конкретный день</div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 text-xs">
+                    <th className="py-1">Гео</th>
+                    <th>Целевой день</th>
+                    <th>За этот прогон</th>
+                    <th>Всего в базе</th>
+                    <th>Глубина</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {live.celi.map((c) => (
+                    <tr key={c.config_id} className="border-t">
+                      <td className="py-1 font-medium">{c.country}</td>
+                      <td>{c.day}</td>
+                      <td className="font-medium">{c.za_etot_progon.toLocaleString('ru')}</td>
+                      <td className="text-gray-500">{c.vsego_v_baze.toLocaleString('ru')}</td>
+                      <td className="text-gray-500">{c.full ? 'полный' : 'проба'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="text-xs text-gray-400 mt-1">
+                «Всего в базе» — сколько объявлений этого дня и гео накоплено за всё время,
+                включая прошлые прогоны. Смотреть на «за этот прогон».
+              </div>
+            </div>
+          )}
+
+          {live.po_geo.length > 0 && (
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Залито за сутки по гео</div>
+              <div className="flex flex-wrap gap-2">
+                {live.po_geo.map((g) => (
+                  <span key={g.country} className="px-2 py-0.5 rounded bg-gray-100 text-xs">
+                    {g.country}: {g.za_sutki.toLocaleString('ru')}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Статистика по словам и языкам */}
+      {words && (words.top_slova.length > 0 || words.po_yazykam.length > 0) && (
+        <div className="bg-white rounded-xl shadow p-5 mb-6">
+          <div className="font-medium mb-1">Слова и языки</div>
+          <div className="text-xs text-gray-500 mb-3">
+            За последние {words.za_dney} дней. Считается по слову, которым найдено
+            объявление — раньше эта связь не сохранялась.
+          </div>
+
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Языки</div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-400 text-xs">
+                    <th className="py-1">Язык</th><th>Крео</th><th>Слов</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {words.po_yazykam.slice(0, 12).map((l) => (
+                    <tr key={l.yazyk} className="border-t">
+                      <td className="py-1 font-medium">{l.yazyk}</td>
+                      <td>{l.kreo.toLocaleString('ru')}</td>
+                      <td className="text-gray-500">{l.slov}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Лучшие слова</div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-400 text-xs">
+                    <th className="py-1">Слово</th><th>Крео</th><th>Языков</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {words.top_slova.slice(0, 12).map((w) => (
+                    <tr key={w.slovo} className="border-t">
+                      <td className="py-1 font-medium">{w.slovo}</td>
+                      <td>{w.kreo.toLocaleString('ru')}</td>
+                      <td className="text-gray-500">{w.yazykov}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {words.slabye_slova.length > 0 && (
+            <div className="mt-4">
+              <div className="text-xs text-gray-500 mb-1">
+                Слабые слова — кандидаты на выброс из словаря
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {words.slabye_slova.slice(0, 30).map((w) => (
+                  <span key={w.slovo} className="px-2 py-0.5 rounded bg-gray-100 text-xs">
+                    {w.slovo}: {w.kreo}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Logs */}
       {logsData?.log_tail && (
         <div className="bg-white rounded-xl shadow overflow-hidden">
@@ -292,6 +724,80 @@ export default function ParserPage() {
           <pre className="p-4 text-xs text-gray-600 overflow-auto max-h-96 bg-gray-50 font-mono whitespace-pre-wrap">
             {logsData.log_tail}
           </pre>
+        </div>
+      )}
+      {dayOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
+          onClick={() => setDayOpen(false)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-xl p-6 w-[440px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-lg font-semibold mb-1">Запустить сбор</div>
+            <div className="text-xs text-gray-500 mb-4">
+              Для сбора за день отсечка выставляется автоматически на сутки позже —
+              вручную считать не нужно.
+            </div>
+
+            <label className="block text-xs text-gray-500 mb-1">
+              Гео: коды через запятую. Пусто — все активные конфиги
+            </label>
+            <input
+              className="w-full border rounded px-3 py-2 mb-3 text-sm"
+              placeholder="BR, MX, US"
+              value={dayCountries}
+              onChange={(e) => setDayCountries(e.target.value)}
+            />
+
+            <label className="block text-xs text-gray-500 mb-1">
+              День запуска рекламы — один день, не диапазон. Для 5 мая укажите 05.05.2026.
+              Пусто — весь период
+            </label>
+            <input
+              type="date"
+              className="w-full border rounded px-3 py-2 mb-3 text-sm"
+              value={dayDate}
+              onChange={(e) => setDayDate(e.target.value)}
+            />
+
+            <label className="block text-xs text-gray-500 mb-1">Глубина</label>
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => setDayDepth('quick')}
+                className={`px-3 py-2 rounded text-sm border ${
+                  dayDepth === 'quick' ? 'bg-blue-50 border-blue-400 text-blue-700' : 'border-gray-200'
+                }`}
+              >
+                Проба · ~15 мин
+              </button>
+              <button
+                onClick={() => setDayDepth('full')}
+                className={`px-3 py-2 rounded text-sm border ${
+                  dayDepth === 'full' ? 'bg-blue-50 border-blue-400 text-blue-700' : 'border-gray-200'
+                }`}
+              >
+                Полный · много часов
+              </button>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setDayOpen(false)}
+                className="px-3 py-2 text-sm text-gray-600"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={() => startDay.mutate()}
+                disabled={startDay.isPending}
+                className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white disabled:opacity-50"
+              >
+                {startDay.isPending ? 'Запускаю…' : 'Запустить'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
