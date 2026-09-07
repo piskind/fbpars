@@ -305,6 +305,14 @@ class PoolProvider(ProxyProvider):
         # Single-IP fallback → nothing better to switch to; try rotate URL if any.
         return await rotate_ip_guarded()
 
+    def report_transport_error(self, proxy_url: str | None = None) -> None:
+        # Обрыв соединения — порт мёртв прямо сейчас. Гасим и рвём sticky, иначе
+        # тот же дохлый порт бьётся до 15 раз подряд с секундной паузой между попытками.
+        if proxy_url and proxy_url != settings.proxy_http_gateway:
+            self._dead[proxy_url] = time.time() + _DEAD_COOLDOWN_SEC
+            self._sticky_left = 0
+            logger.warning(f"[proxy] IP dead (transport error), cooled down {_DEAD_COOLDOWN_SEC}s: {proxy_url.split('@')[-1]}")
+
 
 
 class HybridProvider(ProxyProvider):
@@ -361,10 +369,14 @@ class HybridProvider(ProxyProvider):
         return await self._pool.report_rate_limited(proxy_url)
 
     def report_transport_error(self, proxy_url: str | None = None) -> None:
+        if not proxy_url:
+            return
+        if proxy_url != worker_gateway():
+            # Пуловый IP молчит — гасим немедленно, не дожидаясь исчерпания sticky-окна.
+            self._pool.report_transport_error(proxy_url)
+            return
         # Считаем подряд идущие сбои ТОЛЬКО мобильного канала: пуловые IP дохнут поштучно
         # и это норма, а мобильный канал один — его отказ означает, что полосы нет.
-        if not proxy_url or proxy_url != worker_gateway():
-            return
         self._gost_fails += 1
         if self._gost_fails >= self._fail_limit and time.time() >= self._gost_dead_until:
             self._gost_dead_until = time.time() + self._dead_sec
