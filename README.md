@@ -2,6 +2,18 @@
 
 FB Ads Library parser + admin + dashboard.
 
+## Текущее состояние (07.09.2026)
+
+- база: **7 681 157** объявлений, в витрине: **6 208 069**
+- активных конфигов: **142 keyword**, **17 filters**
+- на глубоком сборе (`max_collect`): **0** — включается только вручную
+
+**Главное правило заказчика: сбор одинаков для всех ключей, без скрытых переключений.**
+Каждый ключ = два среза (обычный поиск + точная фраза). Глубокий сбор сеткой
+(`24 языка × 2 статуса × 3 медиа`) включается ТОЛЬКО вручную галочкой `max_collect` —
+автоматическое включение по объёму отключено намеренно (объём не отличает рекламу бренда
+от чужой рекламы со словом внутри). Подробности и грабли — см. `fbpars-konspekt-07-09.md`.
+
 ## Quickstart (dev)
 
     cp .env.example .env
@@ -44,6 +56,8 @@ FB Ads Library parser + admin + dashboard.
    - `MAX_ADS_PER_CHUNK=…`
    - `PARSER_WORKERS=1`  (see proxy scaling below)
    - `JWT_SECRET=…`, `PROXY_*=…`, `DATABASE_URL=…`
+   - `EMPTY_RETRY_MAX=6` (было 3 — попытки пробить пустой ответ, каналы чередуются)
+   - `DAY_DONE_PACHEK=8` (стоп посуточного среза; было выключено значением 1000000)
 2. `docker-compose.override.yml` present (copy from `docker-compose.override.yml.example`) with
    the `parser-worker` memory limit (prod: `6144m`) and `replicas`.
 3. Rebuild/apply:
@@ -82,3 +96,13 @@ config to wire when that tariff lands.) Empty/one entry → current single-chann
       docker compose exec parser python -m app.cleanup_chunk_progress --apply     # delete
 
 - **Credential rotation:** `scripts/harden.sh` (needs `NEW_PG_PASSWORD`, `NEW_ADMIN_PASSWORD`).
+
+## Открытые вопросы
+
+- Три конфига на несуществующем коде гео `IC` (Joint Health, EndaFlex, Osteoflex) — заказчик
+  не подтвердил, какая страна имелась в виду.
+- Транслит кириллицы в домене (`Сила пчелы` → `silapchely`) проверен тестами, не подтверждён
+  живым сбором.
+- Redis копит ключи заданий без TTL (184k / 338 МБ на 07.09) — не критично, но растёт.
+
+Подробная история решений и грабель — `fbpars-konspekt-07-09.md`.
